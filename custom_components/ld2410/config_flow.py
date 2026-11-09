@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from .api import Advertisement, LD2410, OperationError, parse_advertisement_data
@@ -15,6 +16,7 @@ from homeassistant.components.bluetooth import (
 )
 from homeassistant.config_entries import (
     ConfigEntry,
+    ConfigEntryState,
     ConfigFlow,
     ConfigFlowResult,
     OptionsFlow,
@@ -22,7 +24,13 @@ from homeassistant.config_entries import (
 from homeassistant.const import CONF_ADDRESS, CONF_SENSOR_TYPE, CONF_PASSWORD
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import AbortFlow
+from homeassistant.helpers.selector import (
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
+)
 from .const import (
+    CONF_NEW_PASSWORD,
     CONF_RETRY_COUNT,
     CONNECTABLE_MODEL_TYPES,
     DEFAULT_RETRY_COUNT,
@@ -31,6 +39,9 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# The device stores exactly six printable ASCII characters.
+PASSWORD_PATTERN = re.compile(r"[ -~]{6}")
 
 
 def format_unique_id(address: str) -> str:
@@ -228,12 +239,17 @@ class LD2410OptionsFlowHandler(OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Manage options."""
+        """Manage options; optionally change the device's Bluetooth password."""
+        errors: dict[str, str] = {}
         if user_input is not None:
-            # Merge, so options stored elsewhere (saved sensitivities) survive.
-            return self.async_create_entry(
-                title="", data={**self.config_entry.options, **user_input}
-            )
+            new_password = user_input.pop(CONF_NEW_PASSWORD, "")
+            if new_password:
+                errors = await self._async_change_password(new_password)
+            if not errors:
+                # Merge, so options stored elsewhere (saved sensitivities) survive.
+                return self.async_create_entry(
+                    title="", data={**self.config_entry.options, **user_input}
+                )
 
         options: dict[vol.Optional, Any] = {
             vol.Optional(
@@ -241,6 +257,39 @@ class LD2410OptionsFlowHandler(OptionsFlow):
                 default=self.config_entry.options.get(
                     CONF_RETRY_COUNT, DEFAULT_RETRY_COUNT
                 ),
-            ): vol.All(int, vol.Range(min=0))
+            ): vol.All(int, vol.Range(min=0)),
+            vol.Optional(CONF_NEW_PASSWORD): TextSelector(
+                TextSelectorConfig(type=TextSelectorType.PASSWORD)
+            ),
         }
-        return self.async_show_form(step_id="init", data_schema=vol.Schema(options))
+        return self.async_show_form(
+            step_id="init", data_schema=vol.Schema(options), errors=errors or None
+        )
+
+    async def _async_change_password(self, password: str) -> dict[str, str]:
+        """Set a new password on the device, save it and reboot the device."""
+        if not PASSWORD_PATTERN.fullmatch(password):
+            return {CONF_NEW_PASSWORD: "invalid_password"}
+        if self.config_entry.state is not ConfigEntryState.LOADED:
+            return {"base": "not_loaded"}
+        device = self.config_entry.runtime_data.device
+        try:
+            await device.cmd_set_bluetooth_password(password)
+        except (OperationError, *BLEAK_RETRY_EXCEPTIONS) as err:
+            # A later step may fail after the device accepted the password;
+            # then the new one must be saved or we would lock ourselves out.
+            if not device.password_is(password):
+                _LOGGER.warning("%s: Failed to change password: %s", device.name, err)
+                return {"base": "change_failed"}
+        self.hass.config_entries.async_update_entry(
+            self.config_entry, data={**self.config_entry.data, CONF_PASSWORD: password}
+        )
+        try:
+            await device.cmd_reboot()
+        except (OperationError, *BLEAK_RETRY_EXCEPTIONS) as err:
+            _LOGGER.warning(
+                "%s: Password changed, but reboot failed; reboot it manually: %s",
+                device.name,
+                err,
+            )
+        return {}

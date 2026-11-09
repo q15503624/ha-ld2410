@@ -145,6 +145,12 @@ class LD2410(Device):
             + bytearray.fromhex(TX_FOOTER)
         )
 
+    def _loggable_command(self, raw_command: str) -> str:
+        """Hide the password carried by the permission and set-password commands."""
+        if raw_command[:4].upper() in (CMD_BT_GET_PERMISSION, CMD_BT_SET_PWD):
+            return raw_command[:4] + "******"
+        return raw_command
+
     def _parse_response(self, raw_command: str, data: bytes) -> bytes:
         payload = _unwrap_frame(data, TX_HEADER, TX_FOOTER)
         if len(payload) < 2:

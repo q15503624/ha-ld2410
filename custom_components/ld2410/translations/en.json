@@ -36,12 +36,19 @@
         "step": {
             "init": {
                 "data": {
-                    "retry_count": "Retry count"
+                    "retry_count": "Retry count",
+                    "new_password": "New Bluetooth password"
                 },
                 "data_description": {
-                    "retry_count": "How many times to retry sending commands to your devices"
+                    "retry_count": "How many times to retry sending commands to your devices",
+                    "new_password": "Leave empty to keep the current password. Exactly 6 printable ASCII characters; the device reboots after the change."
                 }
             }
+        },
+        "error": {
+            "invalid_password": "The password must be exactly 6 printable ASCII characters.",
+            "change_failed": "The device did not accept the new password. Check the connection and try again.",
+            "not_loaded": "The device is not set up yet; wait until it is connected and try again."
         }
     },
     "entity": {
@@ -55,16 +62,8 @@
             "load_sensitivities": {
                 "name": "Load sensitivities"
             },
-            "change_password": {
-                "name": "Change password"
-            },
             "reboot": {
                 "name": "Reboot device"
-            }
-        },
-        "text": {
-            "new_password": {
-                "name": "New password"
             }
         },
         "select": {

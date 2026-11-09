@@ -2,13 +2,14 @@
 
 import asyncio
 import json
+import logging
 from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from bleak.backends.device import BLEDevice
-from homeassistant.const import CONF_PASSWORD
+from homeassistant.const import CONF_PASSWORD, EVENT_CALL_SERVICE
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType, InvalidData
 from homeassistant.exceptions import HomeAssistantError
@@ -17,8 +18,9 @@ from homeassistant.setup import async_setup_component
 
 from custom_components.ld2410.api.const import CMD_ENABLE_CFG, CMD_END_CFG
 from custom_components.ld2410.api.devices.device import OperationError
-from custom_components.ld2410.api.devices.ld2410 import LD2410
+from custom_components.ld2410.api.devices.ld2410 import LD2410, _password_to_words
 from custom_components.ld2410.const import (
+    CONF_NEW_PASSWORD,
     CONF_RETRY_COUNT,
     CONF_SAVED_MOVE_SENSITIVITY,
     CONF_SAVED_STILL_SENSITIVITY,
@@ -283,64 +285,147 @@ async def test_engineering_frame_does_not_overwrite_max_gates() -> None:
 
 
 # 7. New password is never stored in plain text -------------------------------
+# The password is changed from the options form: unlike a text entity plus a
+# button, a form submission is not a service call, so the recorder never stores
+# the password in its event table.
 
 
-@pytest.mark.usefixtures("entity_registry_enabled_by_default")
-async def test_new_password_state_is_masked_and_cleared(hass: HomeAssistant) -> None:
-    """The text state goes to history, so it must never hold the password."""
+async def _submit_options(hass: HomeAssistant, entry: MockConfigEntry, **user_input):
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input=user_input
+    )
+    await hass.async_block_till_done()
+    return result
+
+
+def _accepting_device(device: LD2410, fail_after_accept: bool = False):
+    async def _set(password: str) -> None:
+        device._password_words = _password_to_words(password)
+        if fail_after_accept:
+            raise OperationError("Failed to end configuration")
+
+    return patch.object(device, "cmd_set_bluetooth_password", side_effect=_set)
+
+
+async def test_options_change_password(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The new password is saved to data, never to options, events or logs."""
+    caplog.set_level(logging.DEBUG)
+    calls = []
+    hass.bus.async_listen(EVENT_CALL_SERVICE, calls.append)
     with ExitStack() as stack:
-        entry = _entry()
+        entry = _entry(password="old123")
         device = await _setup(hass, stack, entry)
-        await hass.services.async_call(
-            "text",
-            "set_value",
-            {"entity_id": "text.test_name_new_password", "value": "abcd12"},
-            blocking=True,
+        stack.enter_context(_accepting_device(device))
+        reboot = stack.enter_context(patch.object(device, "cmd_reboot", AsyncMock()))
+
+        result = await _submit_options(
+            hass, entry, **{CONF_RETRY_COUNT: 3, CONF_NEW_PASSWORD: "S3cr#t"}
         )
-        assert hass.states.get("text.test_name_new_password").state == "******"
 
-        async def _accept(password):
-            device._password_words = ()
-            device.password_is = lambda pw: pw == password
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.data[CONF_PASSWORD] == "S3cr#t"
+    assert CONF_NEW_PASSWORD not in entry.options
+    reboot.assert_awaited_once()
+    assert "S3cr#t" not in str([call.data for call in calls])
+    assert "S3cr#t" not in caplog.text
+    assert "".join(_password_to_words("S3cr#t")) not in caplog.text.lower()
 
+
+async def test_options_without_password_keeps_it(hass: HomeAssistant) -> None:
+    """Leaving the field empty only saves the other options."""
+    with ExitStack() as stack:
+        entry = _entry(password="old123")
+        device = await _setup(hass, stack, entry)
+        set_password = stack.enter_context(
+            patch.object(device, "cmd_set_bluetooth_password", AsyncMock())
+        )
+        result = await _submit_options(hass, entry, **{CONF_RETRY_COUNT: 3})
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    set_password.assert_not_awaited()
+    assert entry.data[CONF_PASSWORD] == "old123"
+
+
+@pytest.mark.parametrize("password", ["abc", "abcdefg", "abc£$1"])
+async def test_options_rejects_invalid_password(
+    hass: HomeAssistant, password: str
+) -> None:
+    """Only six printable ASCII characters reach the device."""
+    with ExitStack() as stack:
+        entry = _entry(password="old123")
+        device = await _setup(hass, stack, entry)
+        set_password = stack.enter_context(
+            patch.object(device, "cmd_set_bluetooth_password", AsyncMock())
+        )
+        result = await _submit_options(hass, entry, **{CONF_NEW_PASSWORD: password})
+
+    assert result["errors"] == {CONF_NEW_PASSWORD: "invalid_password"}
+    set_password.assert_not_awaited()
+    assert entry.data[CONF_PASSWORD] == "old123"
+
+
+async def test_options_password_rejected_keeps_old(hass: HomeAssistant) -> None:
+    """When the device refuses the change, the old password stays in use."""
+    with ExitStack() as stack:
+        entry = _entry(password="old123")
+        device = await _setup(hass, stack, entry)
         stack.enter_context(
-            patch.object(device, "cmd_set_bluetooth_password", side_effect=_accept)
+            patch.object(
+                device,
+                "cmd_set_bluetooth_password",
+                AsyncMock(
+                    side_effect=OperationError("Failed to set bluetooth password")
+                ),
+            )
         )
-        stack.enter_context(patch.object(device, "cmd_reboot", AsyncMock()))
-        await hass.services.async_call(
-            "button",
-            "press",
-            {"entity_id": "button.test_name_change_password"},
-            blocking=True,
-        )
-        assert entry.runtime_data.new_password == ""
+        result = await _submit_options(hass, entry, **{CONF_NEW_PASSWORD: "abcd12"})
+
+    assert result["errors"] == {"base": "change_failed"}
+    assert entry.data[CONF_PASSWORD] == "old123"
 
 
-@pytest.mark.usefixtures("entity_registry_enabled_by_default")
 async def test_password_saved_when_end_config_fails(hass: HomeAssistant) -> None:
     """If the device took the new password, save it even when a later step fails."""
     with ExitStack() as stack:
         entry = _entry(password="old123")
         device = await _setup(hass, stack, entry)
-        entry.runtime_data.new_password = "abcd12"
-
-        async def _accept_then_fail(password):
-            device.password_is = lambda pw: pw == password
-            raise OperationError("Failed to end configuration")
-
+        stack.enter_context(_accepting_device(device, fail_after_accept=True))
         stack.enter_context(
             patch.object(
-                device, "cmd_set_bluetooth_password", side_effect=_accept_then_fail
+                device, "cmd_reboot", AsyncMock(side_effect=OperationError("no ack"))
             )
         )
-        with pytest.raises(HomeAssistantError):
-            await hass.services.async_call(
-                "button",
-                "press",
-                {"entity_id": "button.test_name_change_password"},
-                blocking=True,
-            )
+        result = await _submit_options(hass, entry, **{CONF_NEW_PASSWORD: "abcd12"})
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
     assert entry.data[CONF_PASSWORD] == "abcd12"
+
+
+async def test_options_password_needs_loaded_entry(hass: HomeAssistant) -> None:
+    """Without a connected device there is nothing to change the password on."""
+    entry = _entry(password="old123")
+    entry.add_to_hass(hass)
+    result = await _submit_options(hass, entry, **{CONF_NEW_PASSWORD: "abcd12"})
+
+    assert result["errors"] == {"base": "not_loaded"}
+    assert entry.data[CONF_PASSWORD] == "old123"
+
+
+async def test_legacy_password_entities_are_removed(hass: HomeAssistant) -> None:
+    """The old text and button entities disappear after the update."""
+    registry = er.async_get(hass)
+    old = [
+        registry.async_get_or_create("text", DOMAIN, "aabbccddeeff-new_password"),
+        registry.async_get_or_create("button", DOMAIN, "aabbccddeeff-change_password"),
+    ]
+    with ExitStack() as stack:
+        await _setup(hass, stack, _entry())
+
+    for entity in old:
+        assert registry.async_get(entity.entity_id) is None
 
 
 # 8. BLE errors become friendly errors ----------------------------------------
@@ -463,6 +548,10 @@ def test_translations_cover_config_and_options() -> None:
     assert {"wrong_password", "cannot_connect"} <= set(en["config"]["error"])
     assert "not_supported" in en["config"]["abort"]
     assert "retry_count" in en["options"]["step"]["init"]["data"]
+    assert "new_password" in en["options"]["step"]["init"]["data"]
+    assert {"invalid_password", "change_failed", "not_loaded"} <= set(
+        en["options"]["error"]
+    )
 
 
 # Max gates (new number entities) -------------------------------------------

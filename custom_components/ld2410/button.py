@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import re
 
 from homeassistant.components.button import ButtonEntity
-from homeassistant.const import CONF_PASSWORD
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import EntityCategory
 
@@ -49,7 +47,6 @@ async def async_setup_entry(
             AutoSensitivityButton(coordinator),
             SaveSensitivitiesButton(coordinator, entry),
             LoadSensitivitiesButton(coordinator, entry),
-            ChangePasswordButton(coordinator, entry),
             RebootButton(coordinator),
         ]
     )
@@ -177,67 +174,6 @@ class LoadSensitivitiesButton(Entity, ButtonEntity):
             title="LD2410",
             notification_id=notification_id,
         )
-
-
-class ChangePasswordButton(Entity, ButtonEntity):
-    """Button to change the bluetooth password."""
-
-    _attr_entity_category = EntityCategory.CONFIG
-    _attr_translation_key = "change_password"
-
-    def __init__(self, coordinator: DataCoordinator, entry: ConfigEntryType) -> None:
-        """Initialize the button."""
-        super().__init__(coordinator)
-        self._entry = entry
-        self._attr_unique_id = f"{coordinator.base_unique_id}-change_password"
-
-    @exception_handler
-    async def async_press(self) -> None:
-        """Handle the button press."""
-        password = getattr(self.coordinator, "new_password", "")
-        notification_id = "ld2410_change_password"
-        if len(password) != 6:
-            async_ephemeral_notification(
-                self.hass,
-                "Password must be exactly 6 characters long",
-                title="LD2410",
-                notification_id=notification_id,
-            )
-            return
-        if not re.fullmatch(r"^[ -~]{6}$", password):
-            async_ephemeral_notification(
-                self.hass,
-                "Password contains invalid characters; use printable ASCII",
-                title="LD2410",
-                notification_id=notification_id,
-            )
-            return
-        try:
-            await self._device.cmd_set_bluetooth_password(password)
-        finally:
-            # Save even if a later step failed: once the device accepted the
-            # new password, keeping the old one would lock us out.
-            if self._device.password_is(password):
-                self._save_password(password)
-        self.coordinator.new_password = ""
-        await self._device.cmd_reboot()
-        async_ephemeral_notification(
-            self.hass,
-            "Password changed successfully; device rebooting",
-            title="LD2410",
-            notification_id=notification_id,
-        )
-
-    def _save_password(self, password: str) -> None:
-        data = {**self._entry.data, CONF_PASSWORD: password}
-        try:
-            self.coordinator.hass.config_entries.async_update_entry(
-                self._entry, data=data, reload=False
-            )
-        except TypeError:
-            self.coordinator.hass.config_entries.async_update_entry(
-                self._entry, data=data
-            )
 
 
 class RebootButton(Entity, ButtonEntity):

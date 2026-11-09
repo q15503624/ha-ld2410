@@ -54,9 +54,7 @@ For best results,
 
 📶 **Bluetooth signal** – RSSI strength; move the device closer if the value is weak.
 
-🔑 **New password** – text field for entering a new Bluetooth password. The password must be exactly six printable ASCII characters.
-
-🔄 **Change password** – button that applies the password from *New password* and reboots the device.
+🔑 **Change password** – go to **Settings → Devices & services → LD2410 → Configure** and fill in *New Bluetooth password* (exactly six printable ASCII characters). The device reboots with the new password. A form is used instead of an entity so the password never lands in the recorder database.
 
 🤖 **Auto sensitivities** – button to calibrate gate sensitivities automatically. Leave the room before clicking it, keep it empty for 10 seconds during calibration.
 
@@ -95,6 +93,9 @@ For best results,
 
 2. Navigate to **Settings → Devices & Services**; the HA-LD2410 device should be auto-detected.  
    If it's not detected, click the **Add Integration** button, search for "HA-LD2410", and install it. Your device should appear in the list.
+
+## Tuning panel
+After installing, a **雷達調校** (radar tuning) page appears in the sidebar for admin users. It lists every LD2410 device in a dropdown and shows each gate's live energy against its threshold, with sliders to adjust thresholds, range, absence delay, light and OUT settings, plus calibrate/save/load/reboot buttons. Energy bars need the *Motion/Still gate energy* sensors enabled.
 
 ## Note on recorder
 Some sensors update several times per second. They are **disabled by default**. If you enable them, exclude them from the recorder, or they will fill your database. Real example: six devices with `Last frame` enabled wrote 3.7 million rows in 7 days, 38% of the whole database.

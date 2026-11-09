@@ -31,5 +31,7 @@ DEFAULT_RETRY_COUNT = 3
 
 # Config Options
 CONF_RETRY_COUNT = "retry_count"
+# Options form field only; never stored in options (the password lives in data).
+CONF_NEW_PASSWORD = "new_password"
 CONF_SAVED_MOVE_SENSITIVITY = "saved_move_gate_sensitivity"
 CONF_SAVED_STILL_SENSITIVITY = "saved_still_gate_sensitivity"

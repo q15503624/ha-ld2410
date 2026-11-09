@@ -111,6 +111,10 @@ class BaseDevice:
 
         return bytearray.fromhex(raw_command)
 
+    def _loggable_command(self, raw_command: str) -> str:
+        """Return ``raw_command`` as safe to log; override to hide secrets."""
+        return raw_command
+
     def _parse_response(self, raw_command: str, data: bytes) -> bytes:
         """Parse command response.
 
@@ -694,7 +698,9 @@ class BaseDevice:
         assert self._write_char is not None
         client = self._client
 
-        _LOGGER.debug("%s: Sending command: %s", self.name, raw_command)
+        _LOGGER.debug(
+            "%s: Sending command: %s", self.name, self._loggable_command(raw_command)
+        )
         if wait_for_response:
             self._notify_future = self.loop.create_future()
         await client.write_gatt_char(self._write_char, command, False)

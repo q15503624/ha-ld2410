@@ -16,9 +16,12 @@ from homeassistant.const import (
     CONF_SENSOR_TYPE,
     Platform,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.typing import ConfigType
 
 from .const import (
     CONF_RETRY_COUNT,
@@ -31,7 +34,9 @@ from .const import (
     SupportedModels,
 )
 from .coordinator import ConfigEntryType, DataCoordinator
+from .panel import async_register_panel
 
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 PLATFORMS_BY_TYPE = {
     SupportedModels.LD2410.value: [
@@ -40,13 +45,18 @@ PLATFORMS_BY_TYPE = {
         Platform.BUTTON,
         Platform.NUMBER,
         Platform.SELECT,
-        Platform.TEXT,
     ],
 }
 CLASS_BY_DEVICE = {SupportedModels.LD2410.value: api.LD2410}
 
 
 _LOGGER = logging.getLogger(__name__)
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Set up the integration-wide tuning panel."""
+    await async_register_panel(hass)
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntryType) -> bool:
@@ -119,11 +129,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntryType) -> bool
     entry.async_on_unload(data_coordinator.async_start())
 
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+    _async_remove_legacy_password_entities(hass, entry)
     await hass.config_entries.async_forward_entry_setups(
         entry, PLATFORMS_BY_TYPE[sensor_type]
     )
 
     return True
+
+
+@callback
+def _async_remove_legacy_password_entities(
+    hass: HomeAssistant, entry: ConfigEntry
+) -> None:
+    """Remove the old password entities; the options form replaced them."""
+    registry = er.async_get(hass)
+    for domain, key in (("text", "new_password"), ("button", "change_password")):
+        unique_id = f"{entry.unique_id}-{key}"
+        if entity_id := registry.async_get_entity_id(domain, DOMAIN, unique_id):
+            registry.async_remove(entity_id)
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
