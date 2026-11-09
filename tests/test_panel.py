@@ -25,6 +25,16 @@ async def test_panel_skipped_without_frontend(hass: HomeAssistant) -> None:
     assert DOMAIN not in hass.data.get(DATA_PANELS, {})
 
 
+async def test_panel_from_yaml_without_devices(hass: HomeAssistant) -> None:
+    """An empty `ld2410:` line loads the panel before any device is set up."""
+    hass.config.components.add("frontend")
+    with _patch_static_paths():
+        assert await async_setup_component(hass, DOMAIN, {DOMAIN: {}})
+
+    assert not hass.config_entries.async_entries(DOMAIN)
+    assert DOMAIN in hass.data[DATA_PANELS]
+
+
 async def test_panel_registered(hass: HomeAssistant) -> None:
     """The panel is served from the integration and visible to admins only."""
     hass.config.components.add("frontend")

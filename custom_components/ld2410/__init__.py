@@ -36,7 +36,9 @@ from .const import (
 from .coordinator import ConfigEntryType, DataCoordinator
 from .panel import async_register_panel
 
-CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+# Devices are set up from the UI. An empty `ld2410:` line in configuration.yaml
+# only loads the integration, so the tuning panel shows before any device exists.
+CONFIG_SCHEMA = cv.empty_config_schema(DOMAIN)
 
 PLATFORMS_BY_TYPE = {
     SupportedModels.LD2410.value: [

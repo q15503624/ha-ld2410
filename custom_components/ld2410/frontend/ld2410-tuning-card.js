@@ -200,7 +200,15 @@ class Ld2410TuningCard extends HTMLElement {
   _renderBody() {
     const body = this.shadowRoot.getElementById("body");
     if (!this._deviceId) {
-      body.innerHTML = `<p class="empty">找不到 LD2410 裝置。請先在「設定 → 裝置與服務」完成 LD2410 整合設定。</p>`;
+      body.innerHTML = `
+        <div class="empty">
+          <p>還沒有設定任何 LD2410 裝置。</p>
+          <ol>
+            <li>雷達接上電源，並關閉手機上的 HLKRadarTool App（雷達同時只接受一個藍牙連線）。</li>
+            <li>到「設定 → 裝置與服務」，等 HA 自動發現 <b>HLK-LD2410_xxxx</b> 後按「設定」；或按「新增整合」搜尋 LD2410。</li>
+            <li>輸入藍牙密碼（出廠預設 HiLink），完成後這裡會自動出現裝置。</li>
+          </ol>
+        </div>`;
       return;
     }
     const hasEnergy = GATES.some((g) => this._map[`sensor.motion_gate_${g}_energy`]);

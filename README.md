@@ -95,7 +95,13 @@ For best results,
    If it's not detected, click the **Add Integration** button, search for "HA-LD2410", and install it. Your device should appear in the list.
 
 ## Tuning panel
-After installing, a **雷達調校** (radar tuning) page appears in the sidebar for admin users. It lists every LD2410 device in a dropdown and shows each gate's live energy against its threshold, with sliders to adjust thresholds, range, absence delay, light and OUT settings, plus calibrate/save/load/reboot buttons. Energy bars need the *Motion/Still gate energy* sensors enabled.
+After installing, a **雷達調校** (radar tuning) page appears in the sidebar for admin users once the first LD2410 device is set up. To show it before that, add this line to `configuration.yaml` and restart Home Assistant:
+
+```yaml
+ld2410:
+```
+
+The page lists every LD2410 device in a dropdown and shows each gate's live energy against its threshold, with sliders to adjust thresholds, range, absence delay, light and OUT settings, plus calibrate/save/load/reboot buttons. Energy bars need the *Motion/Still gate energy* sensors enabled.
 
 ## Note on recorder
 Some sensors update several times per second. They are **disabled by default**. If you enable them, exclude them from the recorder, or they will fill your database. Real example: six devices with `Last frame` enabled wrote 3.7 million rows in 7 days, 38% of the whole database.
