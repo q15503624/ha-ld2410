@@ -1,5 +1,7 @@
 # LD2410 for Home Assistant
 
+**English** | [繁體中文](README.zh-Hant.md)
+
 Integration for HiLink **LD2410** Bluetooth Low Energy (BLE) mmWave radar sensors.
 This integration allows Home Assistant to interface directly with LD2410 devices over Bluetooth.
 
@@ -9,6 +11,7 @@ Fork of [megarushing/ha-ld2410](https://github.com/megarushing/ha-ld2410) (MIT) 
 - Real-time motion and occupancy detection using the LD2410 radar.
 - Distance and energy measurements for moving and stationary targets.
 - Per-gate energy sensors for detailed zone analysis.
+- A **雷達調校** (radar tuning) sidebar panel that walks you through empty-room, interference and presence tests, so you never need the phone app.
 
 ## Recommended Setup
 
@@ -16,6 +19,7 @@ For best results,
 - Use an [ESPHome Bluetooth Proxy](https://esphome.io/components/bluetooth_proxy.html) to connect your LD2410 to Home Assistant.
 - Use firmware version 2.44.24073110 or higher on your LD2410 device. 
   - If your device has an older firmware, you can update it using the HLKRadarTool app on [Android](https://play.google.com/store/apps/details?id=com.hlk.hlkradartool&hl=en) or [iOS](https://apps.apple.com/us/app/hlkradartool/id1638651152).
+- The radar accepts one Bluetooth connection at a time. Close the HLKRadarTool app while Home Assistant is connected.
 - If you ever run into issues, you can reset to factory defaults by connecting and disconnecting power from the device 5 times.
 
 ## Entities
@@ -78,7 +82,7 @@ For best results,
 
 🌗 **Light sensitivity** – threshold for the photo sensor (0‑255) when using the light function.
 
-📐 **Distance resolution** – select detection resolution (0.75m or 0.20m); the higher the resolution, more distant targets are detected.
+📐 **Distance resolution** – the length of each gate: 0.75 m (about 6.75 m in total) or 0.20 m (about 1.8 m in total, shorter range but finer).
 
 📤 **OUT level** – select the default level of the OUT pin (usually low becoming high when activated / usually high becoming low when activated).
 
@@ -94,7 +98,7 @@ For best results,
    - e) Click the "ADD" button.
 
 2. Navigate to **Settings → Devices & Services**; the HA-LD2410 device should be auto-detected.  
-   If it's not detected, click the **Add Integration** button, search for "HA-LD2410", and install it. Your device should appear in the list.
+   If it's not detected, click the **Add Integration** button, search for "HA-LD2410", and install it. Your device should appear in the list. The factory Bluetooth password is `HiLink`.
 
 ## Tuning panel
 After installing, a **雷達調校** (radar tuning) page appears in the sidebar for admin users once the first LD2410 device is set up. To show it before that, add this line to `configuration.yaml` and restart Home Assistant:
@@ -103,7 +107,25 @@ After installing, a **雷達調校** (radar tuning) page appears in the sidebar 
 ld2410:
 ```
 
-The page lists every LD2410 device in a dropdown and shows each gate's live energy against its threshold, with sliders to adjust thresholds, range, absence delay, light and OUT settings, plus calibrate/save/load/reboot buttons. Energy bars need the *Motion/Still gate energy* sensors enabled.
+With several radars, switch between them with the dropdown at the top. The panel itself is in Traditional Chinese.
+
+### Quick setup (recommended for the first time)
+The top of the panel is a six-step guide that takes about three minutes:
+
+| Step | What it does |
+|---|---|
+| **1. Prepare** | Checks that the radar is online and its energy sensors report data. One click enables the energy and max-gate entities, which are disabled by default. |
+| **2. Range** | Walk to the farthest spot you want covered; the page shows which gate you are in. One click limits detection to that gate, so the hallway or the next room stay out. |
+| **3. Empty room** | Leave the room while it records 30 s of background noise, shown as a per-gate heat table. Pick a margin and apply thresholds to all 18 gates at once. |
+| **4. Interference** | Turn on one moving thing at a time (fan, air conditioner, curtain…) and record 20 s. The page lists which gates it affects and how strongly, then raises the thresholds above it. |
+| **5. Presence test** | Sit where you usually sit, or walk around, and check that every gate sees you. Gates that miss you get a suggested threshold you can apply with one click. |
+| **6. Finish** | Pick an absence delay and save the thresholds so you can restore them later. |
+
+### Detection map (manual fine-tuning)
+- Each column is one distance gate. The bar is the live energy and the line is the threshold: **a bar above its line means detected**.
+- A lower line is more sensitive. Drag the line on the chart, or select a column and use ±1 / ±5.
+- Recorded noise is drawn as an orange band; keep the threshold above it to avoid false triggers.
+- Every write reports its result: writing, confirmed by the radar, timed out, or failed.
 
 ## Note on recorder
 Some sensors update several times per second. They are **disabled by default**. If you enable them, exclude them from the recorder, or they will fill your database. Real example: six devices with `Last frame` enabled wrote 3.7 million rows in 7 days, 38% of the whole database.
