@@ -126,6 +126,8 @@ The top of the panel is a six-step guide that takes about three minutes:
 - A lower line is more sensitive. Drag the line on the chart, or select a column and use ±1 / ±5.
 - Recorded noise is drawn as an orange band; keep the threshold above it to avoid false triggers.
 - Every write reports its result: writing, confirmed by the radar, timed out, or failed.
+- Each gate gets a plain-language verdict, e.g. "threshold 40 is below the fan's noise 52, so it will false-trigger"; problem gates are marked ⚠.
+- An expandable explainer with diagrams covers what a threshold is and why each gate needs its own.
 
 ## Note on recorder
 Some sensors update several times per second. They are **disabled by default**. If you enable them, exclude them from the recorder, or they will fill your database. Real example: six devices with `Last frame` enabled wrote 3.7 million rows in 7 days, 38% of the whole database.

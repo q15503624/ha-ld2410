@@ -544,6 +544,51 @@ class Ld2410TuningCard extends HTMLElement {
     }).filter(Boolean);
   }
 
+  /** 這一格的雜訊主要來自哪個干擾源（沒有明顯來源時回傳 undefined）。 */
+  _noiseSource(kind, g) {
+    let best;
+    for (const source of this._wiz.sources) {
+      const value = source.max[kind][g];
+      const base = this._wiz.empty?.[kind][g] ?? 0;
+      if (value !== undefined && value >= base + NOTICEABLE && (!best || value > best.value)) best = { name: source.name, value };
+    }
+    return best?.name;
+  }
+
+  /**
+   * 用白話判斷這一格的門檻設得好不好。
+   * level：bad（會誤判或漏判）、warn（邊緣）、ok、info（無法判斷或提醒）。
+   */
+  _diagnose(kind, g) {
+    const limit = this._limit(limitKey(kind, g));
+    if (limit === undefined) return { level: "info", text: "" };
+    if (g > this._maxGate(kind)) return { level: "info", text: "這格超出偵測範圍，不論門檻多少都不會偵測。" };
+    if (limit >= 100) return { level: "warn", text: "門檻 100：能量不可能超過，這格等於關閉。" };
+
+    const noise = this._noise(kind, g);
+    const from = this._noiseSource(kind, g);
+    const source = from ? `「${from}」造成的` : "空房的";
+    const person = this._wiz.person?.kind === kind ? this._wiz.person.max[kind][g] : undefined;
+    const sawPerson = person !== undefined && person >= (noise ?? 0) + NOTICEABLE;
+
+    if (noise !== undefined && limit <= noise) {
+      return { level: "bad", text: `門檻 ${limit} 低於${source}雜訊 ${noise}：沒人時也會判定有人（誤判）。建議至少 ${clamp(noise + 10, 0, 100)}。` };
+    }
+    if (sawPerson && person < limit) {
+      return { level: "bad", text: `有人測試時你的能量只有 ${person}，碰不到門檻 ${limit}：坐在這個距離可能偵測不到（漏判）。` };
+    }
+    if (noise === undefined) {
+      if (limit <= 10) return { level: "warn", text: `門檻 ${limit} 很低：一點點雜訊就會觸發。先做「空房基準」才知道是否會誤判。` };
+      return { level: "info", text: "還沒錄製雜訊：先做快速設定的「空房基準」，這裡就能判斷這個門檻合不合理。" };
+    }
+    const gap = limit - noise;
+    if (gap < 5) return { level: "warn", text: `門檻只比${source}雜訊（${noise}）高 ${gap}：偶爾可能誤判，可再調高一點。` };
+    if (gap > 40 && !sawPerson) {
+      return { level: "warn", text: `門檻比雜訊高 ${gap}：不會誤判，但輕微動作或坐著不動可能偵測不到。做「有人測試」確認。` };
+    }
+    return { level: "ok", text: `門檻比雜訊（${noise}）高 ${gap}${sawPerson ? `，有人時能量 ${person} 也碰得到` : ""}：設定合理。` };
+  }
+
   // ── 畫面 ────────────────────────────────────────────
 
   _buildShell() {
@@ -619,6 +664,8 @@ class Ld2410TuningCard extends HTMLElement {
           每一欄是一段距離。<b class="sw fill-sw"></b>柱子是即時能量，<b class="sw line-sw"></b>橫線是門檻：
           <b>柱子超過橫線就算偵測到</b>。橫線越低越敏感。直接在圖上拖動橫線，或點一欄後在下方微調。
         </p>
+        ${LEARN}
+        <div id="diag-summary" class="diag-summary"></div>
         ${hasEnergy ? "" : `<p class="hint">看不到能量柱：請先完成「快速設定 → 準備」，啟用能量感測器。門檻一樣可以調整。</p>`}
         <div class="chart">
           ${GATES.map(
@@ -632,7 +679,7 @@ class Ld2410TuningCard extends HTMLElement {
                 <ha-icon class="target" icon="mdi:account"></ha-icon>
                 <span class="offtext">不偵測</span>
               </div>
-              <div class="axis"><b>${g}</b><small class="dist"></small></div>
+              <div class="axis"><b>${g}<span class="flag"></span></b><small class="dist"></small></div>
             </div>`,
           ).join("")}
         </div>
@@ -653,6 +700,8 @@ class Ld2410TuningCard extends HTMLElement {
             <button class="step" data-step="5" aria-label="門檻 +5">+5</button>
             <output id="ed-val"></output>
           </div>
+          <div class="scale"><span>0 最敏感：什麼都會觸發</span><span>100 等於關閉</span></div>
+          <p id="ed-diag" class="diag"></p>
           <div class="ed-facts">
             <span>現在能量 <b id="ed-energy"></b></span>
             <span>10 秒內最高 <b id="ed-peak"></b></span>
@@ -993,7 +1042,7 @@ class Ld2410TuningCard extends HTMLElement {
                 (r) =>
                   `<li>Gate ${r.g}（${this._distanceText(r.g)}）：${Object.keys(KINDS)
                     .filter((k) => r[k] !== undefined)
-                    .map((k) => `${KINDS[k].label} <b>${r[k]}</b>`)
+                    .map((k) => `${KINDS[k].label} <b>${r[k]}</b><span class="src-check" data-check="${k}:${r.g}:${r[k]}"></span>`)
                     .join("、")}</li>`,
               )
               .join("")
@@ -1093,6 +1142,21 @@ class Ld2410TuningCard extends HTMLElement {
       rangeBtn.disabled = !hasMax || target === undefined || this._applying;
     }
 
+    // 干擾源結果：目前門檻擋不擋得住
+    for (const el of root.querySelectorAll("[data-check]")) {
+      const [kind, g, value] = el.dataset.check.split(":");
+      const limit = this._limit(limitKey(kind, Number(g)));
+      const outOfRange = Number(g) > this._maxGate(kind);
+      el.className = `src-check ${outOfRange || limit > Number(value) ? "ok" : "bad"}`;
+      el.textContent = outOfRange
+        ? "（超出範圍，不影響）"
+        : limit === undefined
+          ? ""
+          : limit > Number(value)
+            ? `（門檻 ${limit}，已擋住 ✓）`
+            : `（門檻 ${limit}，會誤判 ✗）`;
+    }
+
     for (const button of root.querySelectorAll('[data-act="delay"]')) {
       button.classList.toggle("on", same(button.dataset.value, this._limit("number.absence_delay")));
     }
@@ -1180,6 +1244,22 @@ class Ld2410TuningCard extends HTMLElement {
       col.querySelector(".line").hidden = limit === undefined;
       col.querySelector(".val").textContent = limit ?? "";
       col.querySelector(".dist").textContent = `${meters(g * this._step())}m`;
+      const { level } = this._diagnose(this._kind, g);
+      col.dataset.diag = level;
+      col.querySelector(".flag").textContent = level === "bad" ? "⚠" : "";
+    }
+
+    const problems = GATES.map((g) => [g, this._diagnose(this._kind, g)]).filter(([, d]) => d.level === "bad");
+    const summary = root.getElementById("diag-summary");
+    if (!this._wiz.empty && !this._wiz.sources.length) {
+      summary.className = "diag-summary info";
+      summary.textContent = "完成「快速設定 → 空房基準」後，這裡會指出哪幾格的門檻可能誤判或漏判。";
+    } else if (problems.length) {
+      summary.className = "diag-summary bad";
+      summary.textContent = `${kind.label}偵測有 ${problems.length} 格需要注意（⚠）：${problems.map(([g]) => `Gate ${g}`).join("、")}。點該格看原因。`;
+    } else {
+      summary.className = "diag-summary ok";
+      summary.textContent = `${kind.label}偵測：每一格的門檻都在雜訊之上 👍`;
     }
   }
 
@@ -1208,6 +1288,10 @@ class Ld2410TuningCard extends HTMLElement {
     root.getElementById("ed-energy").textContent = energy ?? "—";
     root.getElementById("ed-peak").textContent = peak ?? "—";
     root.getElementById("ed-noise").textContent = this._noise(this._kind, g) ?? "未錄製";
+    const diag = this._diagnose(this._kind, g);
+    const diagEl = root.getElementById("ed-diag");
+    diagEl.className = `diag ${diag.level}`;
+    diagEl.textContent = diag.text;
 
     const suggest = root.getElementById("ed-suggest");
     suggest.textContent = peak === undefined ? "門檻設為最高值 +10" : `門檻設為最高值 +10（= ${clamp(peak + 10, 0, 100)}）`;
@@ -1273,6 +1357,41 @@ const gateSelect = (key, label, help) =>
 
 const optionSelect = (key, label, help) =>
   `<label>${label}<select data-key="${key}"></select><small>${help}</small></label>`;
+
+/** 示意用的小柱狀圖：雜訊帶、能量柱、門檻線。 */
+const example = (title, noise, limit, energy, text, level) => `
+  <figure class="example ${level}">
+    <div class="plot mini">
+      <div class="noise" style="height:${noise}%"></div>
+      ${energy === undefined ? "" : `<div class="fill" style="height:${energy}%"></div>`}
+      <div class="line" style="bottom:${limit}%"><span class="val">${limit}</span></div>
+    </div>
+    <figcaption><b>${title}</b>${text}</figcaption>
+  </figure>`;
+
+const LEARN = `
+  <details class="learn">
+    <summary>門檻是什麼？為什麼每一格要設不同的數字？</summary>
+    <ol>
+      <li><b>雷達把前方切成 9 格距離</b>（Gate 0 最近）。解析度 0.75 m 時，Gate 0 是 0–0.75 m，Gate 1 是 0.75–1.5 m，依此類推。</li>
+      <li><b>每一格會一直回報「能量」0–100</b>：那個距離的東西動得越明顯、反射越強，數字越高。沒人時也不會是 0，因為牆壁、家電都會產生一點雜訊。</li>
+      <li><b>門檻＝那一格的「觸發線」</b>：能量 ≥ 門檻就判定有人。
+        <b>0</b> 代表任何雜訊都會觸發（一直有人），<b>100</b> 代表永遠不會觸發（等於關閉），一般落在 20–60 之間。</li>
+      <li><b>移動和靜止各有一組門檻</b>：移動看走路、揮手；靜止看坐著、躺著時的呼吸。靜止的能量通常比較小，門檻也常比較低。</li>
+    </ol>
+    <p><b>為什麼每一格不一樣？</b></p>
+    <ul>
+      <li>離雷達近的格子（Gate 0–1）反射強、背景雜訊高 → 門檻要<b>高</b>，不然會一直誤判。</li>
+      <li>遠的格子訊號弱 → 門檻要<b>低</b>，不然人在那裡偵測不到。</li>
+      <li>電風扇、冷氣出風口、窗簾、魚缸只會影響<b>它們所在的距離</b> → 只要把那幾格的門檻拉高，其他格不必動。</li>
+    </ul>
+    <p><b>怎麼判斷設得好不好</b>：橘色帶子是錄到的雜訊，門檻線要在帶子<b>上方</b>，同時要在「有人時能量」的<b>下方</b>。</p>
+    <div class="examples">
+      ${example("太低：誤判", 45, 30, undefined, "沒人時雜訊就超過線，一直判定有人、燈不會關。", "bad")}
+      ${example("剛好", 30, 45, 70, "雜訊在線下、人在線上，判斷正確。", "ok")}
+      ${example("太高：漏判", 20, 85, 60, "人的能量碰不到線，坐著不動時燈會熄。", "bad")}
+    </div>
+  </details>`;
 
 /** 每格能量的色塊表：顏色越深能量越高。 */
 const heatTable = (max, distance) => `
@@ -1406,6 +1525,30 @@ const STYLE = `
   .axis small { color: var(--secondary-text-color); font-size: 0.75em; }
   .sel .axis b { color: var(--primary-color); }
 
+  .flag { color: var(--error-color); margin-left: 2px; }
+  .col[data-diag=bad] .plot { box-shadow: inset 0 0 0 2px var(--error-color); }
+  .diag-summary { margin: 0 0 10px; padding: 8px 12px; border-radius: 8px; font-size: 0.9em; }
+  .diag-summary.info { background: var(--secondary-background-color); color: var(--secondary-text-color); }
+  .diag-summary.ok { background: color-mix(in srgb, var(--success-color, #43a047) 15%, transparent); }
+  .diag-summary.bad { background: color-mix(in srgb, var(--error-color) 15%, transparent); }
+  .diag { margin: 0; padding: 8px 10px; border-radius: 8px; font-size: 0.9em; line-height: 1.5; border-left: 4px solid var(--divider-color); background: var(--card-background-color); }
+  .diag:empty { display: none; }
+  .diag.ok { border-left-color: var(--success-color, #43a047); }
+  .diag.warn { border-left-color: var(--warning-color, #ffa000); }
+  .diag.bad { border-left-color: var(--error-color); }
+  .scale { display: flex; justify-content: space-between; font-size: 0.75em; color: var(--secondary-text-color); margin-top: -6px; }
+  .src-check { margin-left: 4px; font-size: 0.9em; }
+  .src-check.ok { color: var(--success-color, #43a047); }
+  .src-check.bad { color: var(--error-color); }
+  .learn { margin: 0 0 12px; padding: 8px 12px; border-radius: 8px; background: var(--secondary-background-color); font-size: 0.9em; line-height: 1.6; }
+  .learn summary { cursor: pointer; font-weight: 500; color: var(--primary-color); }
+  .learn ol, .learn ul { padding-left: 20px; }
+  .examples { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .example { margin: 0; display: flex; gap: 10px; align-items: flex-end; }
+  .example figcaption { display: flex; flex-direction: column; font-size: 0.9em; }
+  .example.bad b { color: var(--error-color); }
+  .example.ok b { color: var(--success-color, #43a047); }
+  .plot.mini { width: 44px; height: 90px; flex: none; cursor: default; background: var(--card-background-color); }
   .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 8px; font-size: 0.8em; color: var(--secondary-text-color); }
   .legend span { display: inline-flex; align-items: center; gap: 4px; }
   .legend ha-icon { --mdc-icon-size: 16px; color: var(--primary-color); }
