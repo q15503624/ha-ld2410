@@ -18,7 +18,7 @@
     }
   ],
   "codeowners": [
-    "@megarushing"
+    "@q15503624"
   ],
   "config_flow": true,
   "dependencies": ["bluetooth_adapters"],
@@ -28,5 +28,5 @@
   "issue_tracker": "https://github.com/q15503624/ha-ld2410/issues",
   "loggers": ["ld2410"],
   "requirements": [],
-  "version": "0.9.1-gl2"
+  "version": "0.9.1-gl3"
 }

@@ -3,6 +3,8 @@
 Integration for HiLink **LD2410** Bluetooth Low Energy (BLE) mmWave radar sensors.
 This integration allows Home Assistant to interface directly with LD2410 devices over Bluetooth.
 
+Fork of [megarushing/ha-ld2410](https://github.com/megarushing/ha-ld2410) (MIT) with a sidebar tuning panel and password hardening.
+
 ## Features
 - Real-time motion and occupancy detection using the LD2410 radar.
 - Distance and energy measurements for moving and stationary targets.
@@ -82,12 +84,12 @@ For best results,
 
 ## Installation instructions
 1. The easiest way to install the integration is using HACS. Click the button below and follow the instructions:  
-   [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=megarushing&repository=ha-ld2410)
+   [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=q15503624&repository=ha-ld2410)
 
    Alternatively, you can go to HACS and:
    - a) Click on the 3 dots in the top right corner.
    - b) Select "Custom repositories".
-   - c) Add the URL to this repository: https://github.com/megarushing/ha-ld2410.
+   - c) Add the URL to this repository: https://github.com/q15503624/ha-ld2410.
    - d) Select integration.
    - e) Click the "ADD" button.
 
