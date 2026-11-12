@@ -92,15 +92,13 @@ ld2410:
 ## 網頁版（不需要 Home Assistant）
 同一套調校介面也有網頁版，用瀏覽器藍牙直接連雷達，適合幫沒有 Home Assistant 的人調整：
 
-**https://q15503624.github.io/ha-ld2410/web/**（加上 `#demo` 可以用模擬雷達試玩）
+👉 **[開啟網頁版](https://q15503624.github.io/ha-ld2410/web/)**（[示範模式](https://q15503624.github.io/ha-ld2410/web/#demo)：用模擬雷達試玩）
 
 1. 用電腦或 Android 手機的 Chrome、Edge 打開網址。**iPhone、iPad 不支援**網頁藍牙。
 2. 關閉 HLKRadarTool App；雷達已加入 Home Assistant 的話，先在整合裡停用。雷達同時只接受一個藍牙連線。
 3. 輸入藍牙密碼（出廠預設 HiLink），按「連線雷達」選 HLK-LD2410_xxxx。
 
 門檻與設定寫進雷達本身，調好之後關掉網頁、拔電都會保留。網頁只在瀏覽器內執行，密碼與雷達資料不會上傳。「儲存門檻」存在這台電腦的瀏覽器裡。
-
-部署：repo 的 **Settings → Pages** 選 **Deploy from a branch**、`main`、`/ (root)`，推到 main 後就會更新。在本機試用：在 repo 根目錄執行 `python3 -m http.server`，再開 http://localhost:8000/web/ 。測試：`node --test web/test/`。
 
 ## 實體
 

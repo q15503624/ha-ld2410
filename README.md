@@ -147,15 +147,13 @@ Keep the panel open in a foreground tab while it records. Home Assistant closes 
 ## Web tuner (no Home Assistant)
 The same tuning panel also runs as a web page that talks to the radar over browser Bluetooth, handy for tuning a radar for someone without Home Assistant:
 
-**https://q15503624.github.io/ha-ld2410/web/** (add `#demo` to try it with a simulated radar)
+👉 **[Open the web tuner](https://q15503624.github.io/ha-ld2410/web/)** ([demo mode](https://q15503624.github.io/ha-ld2410/web/#demo) with a simulated radar)
 
 1. Open it in Chrome or Edge on a computer or Android phone. **iPhone and iPad are not supported** (no Web Bluetooth).
 2. Close the HLKRadarTool app, and disable the device in Home Assistant if it is set up there. The radar accepts one Bluetooth connection at a time.
 3. Enter the Bluetooth password (factory default `HiLink`), click *連線雷達* (connect) and pick HLK-LD2410_xxxx.
 
 Thresholds and settings are stored in the radar itself and survive closing the page or a power cut. The page runs entirely in the browser; the password and radar data are never uploaded. *Save sensitivities* stores them in this browser.
-
-Deployment: set **Settings → Pages** to **Deploy from a branch**, `main`, `/ (root)`; every push to main updates it. To try it locally, run `python3 -m http.server` in the repo root and open http://localhost:8000/web/. Tests: `node --test web/test/`.
 
 ## Note on recorder
 Some sensors update several times per second. They are **disabled by default**. If you enable them, exclude them from the recorder, or they will fill your database. Real example: six devices with `Last frame` enabled wrote 3.7 million rows in 7 days, 38% of the whole database.
