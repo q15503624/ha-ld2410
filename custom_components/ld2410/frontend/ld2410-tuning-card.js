@@ -12,6 +12,7 @@
 
 const PLATFORM = "ld2410";
 const STORAGE_KEY = "ld2410-tuning-card:device";
+const MODE_KEY = "ld2410-tuning-card:mode"; // "view"（只看數據，預設）或 "edit"
 const GATES = [...Array(9).keys()];
 const PEAK_WINDOW_MS = 10_000;
 const CONFIRM_TIMEOUT_MS = 8_000;
@@ -27,6 +28,9 @@ const MARGINS = [
 const SOURCE_PRESETS = ["電風扇", "冷氣", "窗簾", "寵物", "掃地機器人"];
 const DELAYS = [10, 30, 60, 120];
 const STEPS = ["準備", "偵測範圍", "空房基準", "干擾源", "有人測試", "完成"];
+const WATCH_MINUTES = [10, 30, 60];
+const WATCH_LEAD_SECONDS = 30;
+const WATCH_MARGIN = 10; // 建議門檻 = 監看期間最高值 + 這個值
 
 // "<domain>.<entity_id 結尾>"：整合依實體名稱產生的 entity_id 後綴。
 const KEYS = [
@@ -106,17 +110,19 @@ const meters = (v) => `${+v.toFixed(2)}`;
 const blankGates = () => ({ motion: GATES.map(() => undefined), still: GATES.map(() => undefined) });
 const newWizard = () => ({ step: 0, margin: 10, empty: null, sources: [], person: null, rec: null, sourceName: "" });
 
+const clock = (t) => new Date(t).toLocaleTimeString("zh-TW", { hour12: false });
+
 const storage = {
-  get: () => {
+  get: (key) => {
     try {
-      return localStorage.getItem(STORAGE_KEY);
+      return localStorage.getItem(key);
     } catch {
       return null;
     }
   },
-  set: (value) => {
+  set: (key, value) => {
     try {
-      localStorage.setItem(STORAGE_KEY, value);
+      localStorage.setItem(key, value);
     } catch {
       /* 無法儲存時只是不記住選擇 */
     }
@@ -133,6 +139,8 @@ class Ld2410TuningCard extends HTMLElement {
     this._history = {}; // 能量歷史 key → [[時間, 值]]，算 10 秒內最高值
     this._wiz = newWizard();
     this._disabledIds = []; // 這台裝置被停用、快速設定需要的實體
+    this._watch = null; // 無人監看的錄製與結果
+    this._locked = storage.get(MODE_KEY) !== "edit"; // 只看數據：拖動、滑桿不會寫入雷達
   }
 
   setConfig(config) {
@@ -156,7 +164,7 @@ class Ld2410TuningCard extends HTMLElement {
 
     const ids = devices.map((d) => d.id);
     if (!ids.includes(this._deviceId)) {
-      const saved = storage.get();
+      const saved = storage.get(STORAGE_KEY);
       this._selectDevice(ids.includes(saved) ? saved : ids[0]);
     }
 
@@ -171,6 +179,7 @@ class Ld2410TuningCard extends HTMLElement {
     }
     this._recordEnergy();
     this._sampleRecording();
+    this._sampleWatch();
     this._update();
   }
 
@@ -321,8 +330,10 @@ class Ld2410TuningCard extends HTMLElement {
     this._pending = {};
     clearInterval(this._wiz.rec?.timer);
     this._wiz = newWizard();
+    clearInterval(this._watch?.timer);
+    this._watch = null;
     this._disabledIds = [];
-    if (id) storage.set(id);
+    if (id) storage.set(STORAGE_KEY, id);
     const picker = this.shadowRoot.getElementById("device");
     if (picker && id) picker.value = id;
   }
@@ -385,6 +396,7 @@ class Ld2410TuningCard extends HTMLElement {
     }
     this._applying = true;
     this._renderWizard();
+    this._renderWatch();
     let failed = 0;
     for (const [i, [key, value, label]] of todo.entries()) {
       this._setStatus("busy", `${title}：寫入 ${i + 1}/${todo.length}（${label} → ${value}）…`);
@@ -397,6 +409,7 @@ class Ld2410TuningCard extends HTMLElement {
     this._setStatus(failed ? "error" : "ok", message);
     this._toast(message);
     this._renderWizard();
+    this._renderWatch();
   }
 
   _press(key, label) {
@@ -422,10 +435,17 @@ class Ld2410TuningCard extends HTMLElement {
     this.dispatchEvent(new CustomEvent("hass-notification", { detail: { message }, bubbles: true, composed: true }));
   }
 
+  _toggleMode() {
+    this._commit();
+    this._locked = !this._locked;
+    storage.set(MODE_KEY, this._locked ? "view" : "edit");
+    this._update();
+  }
+
   /** 拖動或 ± 調整門檻；commit 時才送出。 */
   _adjust(value, commit) {
     const key = limitKey(this._kind, this._gate);
-    if (!this._map[key]) return;
+    if (this._locked || !this._map[key]) return;
     this._drag = { key, value: clamp(Math.round(value), 0, 100) };
     if (commit) this._commit();
     else this._update();
@@ -500,6 +520,106 @@ class Ld2410TuningCard extends HTMLElement {
     }
     this._renderWizard();
     this._update();
+  }
+
+  // ── 無人監看：抓偶發誤判 ────────────────────────────
+
+  _startWatch(minutes) {
+    clearInterval(this._watch?.timer);
+    this._watch = {
+      minutes,
+      phase: "lead",
+      end: Date.now() + WATCH_LEAD_SECONDS * 1000,
+      max: blankGates(),
+      hits: blankGates(), // 超過門檻的次數（從低於到超過算一次）
+      first: blankGates(), // 第一次超過的時間
+      above: blankGates(),
+      events: [], // 「有人」從否變成是的時間
+      samples: 0,
+      timer: setInterval(() => this._tickWatch(), 1000),
+    };
+    this._renderWatch();
+  }
+
+  _tickWatch() {
+    const watch = this._watch;
+    if (!watch || watch.phase === "done") return;
+    const now = Date.now();
+    if (watch.phase === "lead" && now >= watch.end) {
+      Object.assign(watch, { phase: "rec", start: now, end: now + watch.minutes * 60_000 });
+      watch.occupied = this._value("binary_sensor.occupancy") === "on";
+      this._renderWatch();
+    }
+    this._sampleWatch();
+    if (watch.phase === "rec" && now >= watch.end) this._finishWatch();
+    else this._updateWatch();
+  }
+
+  _sampleWatch() {
+    const watch = this._watch;
+    const now = Date.now();
+    if (watch?.phase !== "rec" || now > watch.end) return;
+    for (const kind of Object.keys(KINDS)) {
+      for (const g of GATES) {
+        const value = this._number(energyKey(kind, g));
+        if (value === undefined) continue;
+        watch.samples++;
+        watch.max[kind][g] = Math.max(watch.max[kind][g] ?? 0, value);
+        const limit = this._number(limitKey(kind, g));
+        const above = limit !== undefined && g <= this._maxGate(kind) && value >= limit;
+        if (above && !watch.above[kind][g]) {
+          watch.hits[kind][g] = (watch.hits[kind][g] ?? 0) + 1;
+          watch.first[kind][g] ??= now;
+        }
+        watch.above[kind][g] = above;
+      }
+    }
+    const occupied = this._value("binary_sensor.occupancy") === "on";
+    if (occupied && !watch.occupied) {
+      const kinds = Object.values(KINDS).filter((k) => this._value(k.sensor) === "on").map((k) => k.label);
+      watch.events.push({ t: now, kinds });
+    }
+    watch.occupied = occupied;
+  }
+
+  _finishWatch() {
+    const watch = this._watch;
+    clearInterval(watch.timer);
+    if (watch.phase === "lead") {
+      this._watch = null;
+    } else {
+      Object.assign(watch, { phase: "done", end: Date.now() });
+      // 當成一個干擾源，偵測地圖的雜訊帶與診斷也會用到。
+      if (watch.samples) this._wiz.sources.push({ name: `無人監看 ${clock(watch.start)}–${clock(watch.end)}`, max: watch.max });
+      this._toast("LD2410 無人監看完成");
+    }
+    this._renderWatch();
+    this._renderWizard();
+    this._update();
+  }
+
+  /** 監看期間超過或接近門檻的格子，超過的排前面。 */
+  _watchRows() {
+    const watch = this._watch;
+    const rows = [];
+    for (const kind of Object.keys(KINDS)) {
+      for (const g of GATES) {
+        const max = watch.max[kind][g];
+        const limit = this._limit(limitKey(kind, g));
+        if (max === undefined || limit === undefined || g > this._maxGate(kind)) continue;
+        const hits = watch.hits[kind][g] ?? 0;
+        if (!hits && max < limit - NOTICEABLE) continue;
+        rows.push({ kind, g, max, limit, hits, first: watch.first[kind][g], suggest: clamp(max + WATCH_MARGIN, 0, 100) });
+      }
+    }
+    return rows.sort((a, b) => b.hits - a.hits || b.max - b.limit - (a.max - a.limit));
+  }
+
+  /** 只調高被觸發過、目前門檻還擋不住的格子。 */
+  _watchTargets() {
+    return this._watchRows()
+      .filter((r) => r.hits && r.suggest > r.limit && r.suggest < 100)
+      .map((r) => [limitKey(r.kind, r.g), r.suggest, this._gateLabel(r.kind, r.g)]);
   }
 
   // ── 快速設定：分析 ──────────────────────────────────
@@ -599,10 +719,12 @@ class Ld2410TuningCard extends HTMLElement {
         <div class="header">
           <ha-icon icon="mdi:radar"></ha-icon>
           <span class="title">LD2410 雷達調校</span>
+          <button id="mode" class="chip-btn"></button>
           <select id="device" aria-label="選擇裝置"></select>
         </div>
         <div id="body"></div>
       </ha-card>`;
+    this.shadowRoot.getElementById("mode").addEventListener("click", () => this._toggleMode());
     this.shadowRoot.getElementById("device").addEventListener("change", (ev) => {
       this._selectDevice(ev.target.value);
       this.hass = this._hass;
@@ -648,6 +770,11 @@ class Ld2410TuningCard extends HTMLElement {
         <div class="box-head"><h3>快速設定</h3><small class="muted">照順序做，約 3 分鐘完成</small></div>
         <ol class="stepper"></ol>
         <div id="wizard"></div>
+      </section>
+
+      <section class="box">
+        <div class="box-head"><h3>無人監看</h3><small class="muted">人不在時被判定有人？讓它錄一段時間找出原因</small></div>
+        <div id="watch"></div>
       </section>
 
       <section class="box">
@@ -701,6 +828,7 @@ class Ld2410TuningCard extends HTMLElement {
             <output id="ed-val"></output>
           </div>
           <div class="scale"><span>0 最敏感：什麼都會觸發</span><span>100 等於關閉</span></div>
+          <p id="ed-lock" class="note">目前是<b>只看數據</b>：點欄位只會查看，不會改到門檻。要調整請按右上角的「🔒 只看數據」切換。</p>
           <p id="ed-diag" class="diag"></p>
           <div class="ed-facts">
             <span>現在能量 <b id="ed-energy"></b></span>
@@ -755,6 +883,7 @@ class Ld2410TuningCard extends HTMLElement {
       </p>`;
     this._bindControls(body);
     this._renderWizard();
+    this._renderWatch();
   }
 
   _bindControls(body) {
@@ -777,7 +906,7 @@ class Ld2410TuningCard extends HTMLElement {
         if (this._gate !== g) this._commit();
         this._gate = g;
         const value = valueAt(ev);
-        if (value === undefined) return this._update();
+        if (value === undefined || this._locked) return this._update();
         plot.setPointerCapture?.(ev.pointerId);
         this._adjust(value);
       });
@@ -841,6 +970,19 @@ class Ld2410TuningCard extends HTMLElement {
     wizard.addEventListener("click", (ev) => {
       const el = ev.target.closest("[data-act]");
       if (el && !el.disabled) this._wizardAction(el.dataset.act, el.dataset);
+    });
+    body.querySelector("#watch").addEventListener("click", (ev) => {
+      const el = ev.target.closest("[data-watch]");
+      if (!el || el.disabled) return;
+      const action = el.dataset.watch;
+      if (action === "start") this._startWatch(Number(el.dataset.min));
+      if (action === "stop") this._finishWatch();
+      if (action === "clear") {
+        clearInterval(this._watch?.timer);
+        this._watch = null;
+        this._renderWatch();
+      }
+      if (action === "apply") this._applyAll(this._watchTargets(), "只調高被觸發的格子");
     });
     wizard.addEventListener("input", (ev) => {
       if (ev.target.id === "source-name") this._wiz.sourceName = ev.target.value;
@@ -1085,6 +1227,124 @@ class Ld2410TuningCard extends HTMLElement {
       </div>`;
   }
 
+  _renderWatch() {
+    const container = this.shadowRoot.getElementById("watch");
+    if (!container) return;
+    const watch = this._watch;
+    const starts = (label) => `
+      <div class="row">
+        ${WATCH_MINUTES.map((m) => `<button class="${label ? "ghost" : "primary"}" data-watch="start" data-min="${m}">${label}${m} 分鐘</button>`).join("")}
+      </div>`;
+
+    if (!watch) {
+      container.innerHTML = `
+        <p class="lead">房間沒人時錄一段時間，記下每一格的最高能量、<b>哪一格什麼時候超過門檻</b>，再只把那幾格調高。</p>
+        ${starts("")}
+        <p class="muted">按下後有 ${WATCH_LEAD_SECONDS} 秒離開房間，期間不要讓人或寵物進房間。想抓的干擾（冷氣、電扇、窗簾）保持平常的狀態；
+          常在某個時段誤判，就在那個時段錄。</p>
+        <p class="note">錄製靠這個頁面接收資料：請放在電腦或平板上，<b>分頁保持在前景、螢幕不要休眠</b>。
+          HA 預設在分頁切到背景 5 分鐘後會斷線，要長時間監看可以到「個人設定」關閉「自動關閉連線」。</p>`;
+      return;
+    }
+    if (watch.phase !== "done") {
+      container.innerHTML = `
+        <div class="recording">
+          <div class="rec-big" data-live="watch-title"></div>
+          <div class="progress"><div data-live="watch-bar"></div></div>
+          <p class="muted" data-live="watch-hint"></p>
+          <div class="row center">
+            ${watch.phase === "rec" ? `<button class="primary" data-watch="stop">提早結束，看結果</button>` : ""}
+            <button class="ghost" data-watch="clear">取消</button>
+          </div>
+        </div>`;
+      this._updateWatch();
+      return;
+    }
+
+    const minutes = Math.max(1, Math.round((watch.end - watch.start) / 60_000));
+    const events = watch.events.length
+      ? `<p>期間「有人」被觸發 <b>${watch.events.length}</b> 次：${watch.events
+          .slice(0, 10)
+          .map((e) => `${clock(e.t)}${e.kinds.length ? `（${e.kinds.join("、")}）` : ""}`)
+          .join("、")}${watch.events.length > 10 ? "…" : ""}</p>`
+      : "<p>期間「有人」沒有被觸發。</p>";
+    const rows = this._watchRows();
+    const list = rows.length
+      ? `<ul>${rows
+          .map((r) => {
+            const head = `${KINDS[r.kind].label} Gate ${r.g}（${this._distanceText(r.g)}）：最高 <b>${r.max}</b>`;
+            const status = `<span class="src-check" data-wcheck="${r.kind}:${r.g}:${r.max}"></span>`;
+            if (!r.hits) return `<li>${head}，接近門檻${status}：偶爾可能誤判，先觀察。</li>`;
+            const advice =
+              r.suggest >= 100
+                ? "能量太強，調門檻也擋不住：把「最遠偵測」設在這格之前，或移開、轉向干擾源。"
+                : `建議門檻 <b>${r.suggest}</b>。`;
+            return `<li>${head}${status}，超過 ${r.hits} 次，第一次在 ${clock(r.first)} → ${advice}</li>`;
+          })
+          .join("")}</ul>`
+      : "";
+    const verdict = rows.some((r) => r.hits)
+      ? "這些格子在沒人時超過了門檻，就是誤判的來源："
+      : watch.events.length
+        ? "各格能量都沒有超過門檻，但「有人」仍被觸發：可能是有人或寵物進出、門外有人經過，或觸發時間太短沒收到。可以再錄一次，或在偵測地圖上觀察。"
+        : "這段時間每一格都在門檻之下，沒有抓到誤判 👍 常在某個時段誤判的話，就在那個時段再錄一次。";
+    container.innerHTML = `
+      <div class="result ${rows.some((r) => r.hits) ? "warn" : "good"}">
+        <div class="result-head"><b>監看結果：${clock(watch.start)}–${clock(watch.end)}（約 ${minutes} 分鐘）</b>
+          <button class="link" data-watch="clear">清除</button></div>
+        ${events}
+        <p>${verdict}</p>
+        ${list}
+        ${heatTable(watch.max, (g) => this._distanceText(g))}
+        <button class="primary" data-watch="apply" data-live="watch-apply"></button>
+        <p class="muted">建議值 = 監看期間的最高值 +${WATCH_MARGIN}。只會調高被觸發的格子，其他格子不動，不會讓任何一格變得更敏感。
+          調完後再監看一次確認；坐著不動時燈會熄的話，到快速設定做「有人測試」。</p>
+      </div>
+      ${starts("再監看 ")}`;
+    this._updateWatch();
+  }
+
+  _updateWatch() {
+    const root = this.shadowRoot;
+    const watch = this._watch;
+    const live = (name) => root.querySelector(`[data-live="${name}"]`);
+    if (!watch) return;
+    if (watch.phase !== "done") {
+      const left = Math.max(0, Math.ceil((watch.end - Date.now()) / 1000));
+      const title = live("watch-title");
+      if (title) {
+        title.textContent =
+          watch.phase === "lead"
+            ? `請離開房間… ${left} 秒後開始監看`
+            : `監看中… 剩 ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
+      }
+      const bar = live("watch-bar");
+      if (bar) bar.style.width = `${watch.phase === "lead" ? 0 : 100 - (left / (watch.minutes * 60)) * 100}%`;
+      const hint = live("watch-hint");
+      if (hint) {
+        const gates = Object.keys(KINDS).flatMap((k) => GATES.filter((g) => watch.hits[k][g]));
+        hint.textContent =
+          watch.phase === "lead"
+            ? "離開後關上門。頁面保持開著。"
+            : `目前「有人」被觸發 ${watch.events.length} 次，${gates.length} 格曾超過門檻。不要讓人進房間。`;
+      }
+      return;
+    }
+    for (const el of root.querySelectorAll("[data-wcheck]")) {
+      const [kind, g, max] = el.dataset.wcheck.split(":");
+      const limit = this._limit(limitKey(kind, Number(g)));
+      const blocked = limit > Number(max);
+      el.className = `src-check ${blocked ? "ok" : "bad"}`;
+      el.textContent = limit === undefined ? "" : blocked ? `（門檻 ${limit}，已擋住 ✓）` : `（門檻 ${limit}，擋不住 ✗）`;
+    }
+    const apply = live("watch-apply");
+    if (apply) {
+      const count = this._watchTargets().length;
+      apply.textContent = count ? `只調高這 ${count} 格` : "被觸發的格子都已經擋住了";
+      apply.disabled = !count || this._applying;
+    }
+  }
+
   /** 快速設定中需要即時更新的文字（每次 hass 更新與錄製倒數都會呼叫）。 */
   _updateWizard() {
     const root = this.shadowRoot;
@@ -1184,7 +1444,14 @@ class Ld2410TuningCard extends HTMLElement {
 
   _update() {
     const root = this.shadowRoot;
+    const mode = root.getElementById("mode");
+    mode.textContent = this._locked ? "🔒 只看數據" : "✏️ 可調整";
+    mode.classList.toggle("on", !this._locked);
+    mode.title = this._locked
+      ? "現在拖動地圖或滑桿都不會寫入雷達。按一下切換成可調整。"
+      : "現在拖動地圖、滑桿會直接寫入雷達。按一下切換成只看數據。";
     if (!this._deviceId || !root.getElementById("ed-range")) return;
+    root.getElementById("body").classList.toggle("locked", this._locked);
 
     // 雷達回報的值和送出的值一致 → 寫入成功。
     for (const [key, pending] of Object.entries(this._pending)) {
@@ -1206,6 +1473,7 @@ class Ld2410TuningCard extends HTMLElement {
     this._updateEditor();
     this._updateSettings();
     this._updateWizard();
+    this._updateWatch();
 
     root.querySelector('[data-text="sensor.firmware_version"]').textContent = this._value("sensor.firmware_version") ?? "—";
     const rssi = this._value("sensor.signal_strength") ?? this._value("sensor.bluetooth_signal");
@@ -1282,8 +1550,10 @@ class Ld2410TuningCard extends HTMLElement {
 
     const range = root.getElementById("ed-range");
     if (this._drag?.key !== key && limit !== undefined) range.value = limit;
-    range.disabled = limit === undefined;
-    for (const button of root.querySelectorAll(".step")) button.disabled = limit === undefined;
+    const frozen = limit === undefined || this._locked;
+    range.disabled = frozen;
+    for (const button of root.querySelectorAll(".step")) button.disabled = frozen;
+    root.getElementById("ed-lock").hidden = !this._locked;
     root.getElementById("ed-val").textContent = limit ?? "未啟用";
     root.getElementById("ed-energy").textContent = energy ?? "—";
     root.getElementById("ed-peak").textContent = peak ?? "—";
@@ -1295,12 +1565,12 @@ class Ld2410TuningCard extends HTMLElement {
 
     const suggest = root.getElementById("ed-suggest");
     suggest.textContent = peak === undefined ? "門檻設為最高值 +10" : `門檻設為最高值 +10（= ${clamp(peak + 10, 0, 100)}）`;
-    suggest.disabled = peak === undefined || limit === undefined;
+    suggest.disabled = peak === undefined || frozen;
 
     const max = root.getElementById("ed-max");
     const maxGate = Math.max(2, g);
     max.textContent = `${kind.label}偵測只到這裡（Gate ${maxGate}，${meters((maxGate + 1) * step)} m 內）`;
-    max.disabled = !this._map[kind.maxKey] || this._maxGate(this._kind) === maxGate;
+    max.disabled = this._locked || !this._map[kind.maxKey] || this._maxGate(this._kind) === maxGate;
     max.title = this._map[kind.maxKey] ? "" : "「最遠偵測閘」實體預設停用：到裝置頁啟用後即可使用";
   }
 
@@ -1311,7 +1581,7 @@ class Ld2410TuningCard extends HTMLElement {
       const value = this._limit(key);
       const active = input.dataset.dragging || input === root.activeElement;
       if (!active && value !== undefined) input.value = value;
-      input.disabled = value === undefined;
+      input.disabled = value === undefined || this._locked;
       const label = root.querySelector(`[data-num="${key}"]`);
       if (label) label.textContent = active ? input.value : value ?? "未啟用";
       input.closest("label").classList.toggle("pending", Boolean(this._pending[key]));
@@ -1329,8 +1599,8 @@ class Ld2410TuningCard extends HTMLElement {
       }
       const value = this._pending[key]?.value ?? (key.startsWith("number.") ? String(this._number(key) ?? "") : this._value(key));
       if (select !== root.activeElement && value !== undefined) select.value = value;
-      select.disabled = !state || state.state === "unavailable";
-      select.title = state ? "" : "此實體預設停用：到裝置頁啟用後即可調整";
+      select.disabled = !state || state.state === "unavailable" || this._locked;
+      select.title = !state ? "此實體預設停用：到裝置頁啟用後即可調整" : this._locked ? "只看數據模式：按右上角切換成可調整" : "";
       select.closest("label").classList.toggle("pending", Boolean(this._pending[key]));
     }
   }
@@ -1421,9 +1691,9 @@ const STYLE = `
   button { font: inherit; cursor: pointer; }
   button:disabled { opacity: 0.4; cursor: default; }
   h3 { margin: 0 0 8px; font-weight: 500; }
-  .muted, .empty, .hint, .explain { color: var(--secondary-text-color); }
+  .muted, .empty, .hint, .note, .explain { color: var(--secondary-text-color); }
   small.muted { font-weight: 400; font-size: 0.8em; }
-  .hint { background: var(--secondary-background-color); padding: 8px 12px; border-radius: 8px; }
+  .hint, .note { background: var(--secondary-background-color); padding: 8px 12px; border-radius: 8px; }
   .explain { font-size: 0.9em; line-height: 1.6; margin: 4px 0 12px; }
   .primary { padding: 8px 16px; border-radius: 8px; border: none; background: var(--primary-color); color: var(--text-primary-color, #fff); }
   .primary.big { padding: 12px 24px; font-size: 1.1em; }
@@ -1486,6 +1756,8 @@ const STYLE = `
     padding: 4px 0; border-radius: 4px; font-variant-numeric: tabular-nums;
     background: color-mix(in srgb, var(--error-color) calc(var(--v) * 1%), var(--card-background-color));
   }
+  .row.center { justify-content: center; margin-top: 12px; }
+  #body.locked .plot { cursor: pointer; }
   .margin { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
 
   .tabs { display: inline-flex; border-radius: 999px; background: var(--secondary-background-color); padding: 3px; }

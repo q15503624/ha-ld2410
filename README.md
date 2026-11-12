@@ -11,7 +11,7 @@ Fork of [megarushing/ha-ld2410](https://github.com/megarushing/ha-ld2410) (MIT) 
 - Real-time motion and occupancy detection using the LD2410 radar.
 - Distance and energy measurements for moving and stationary targets.
 - Per-gate energy sensors for detailed zone analysis.
-- A **雷達調校** (radar tuning) sidebar panel that walks you through empty-room, interference and presence tests, so you never need the phone app.
+- A **雷達調校** (radar tuning) sidebar panel that walks you through empty-room, interference and presence tests, so you never need the phone app, plus an absence watch that finds occasional false triggers.
 
 ## Recommended Setup
 
@@ -128,6 +128,12 @@ The top of the panel is a six-step guide that takes about three minutes:
 - Every write reports its result: writing, confirmed by the radar, timed out, or failed.
 - Each gate gets a plain-language verdict, e.g. "threshold 40 is below the fan's noise 52, so it will false-trigger"; problem gates are marked ⚠.
 - An expandable explainer with diagrams covers what a threshold is and why each gate needs its own.
+- The panel opens in **🔒 View only** mode: you can click columns and watch the data, but dragging and sliders do nothing. Switch to **✏️ Editable** at the top right to change values; the choice is remembered.
+
+### Absence watch (catch occasional false presence)
+If the radar sometimes reports presence when nobody is home, start a 10, 30 or 60 minute watch and leave the room. The panel records each gate's highest energy, which gates crossed their threshold, how often and when, and when *Occupancy* turned on. One click raises **only** the gates that triggered (highest value + 10); no gate is ever lowered. Gates too strong to block are pointed to *max gate* instead.
+
+Keep the panel open in a foreground tab while it records. Home Assistant closes the connection of a background tab after 5 minutes unless *Automatically close connection* is turned off in your profile.
 
 ## Note on recorder
 Some sensors update several times per second. They are **disabled by default**. If you enable them, exclude them from the recorder, or they will fill your database. Real example: six devices with `Last frame` enabled wrote 3.7 million rows in 7 days, 38% of the whole database.
