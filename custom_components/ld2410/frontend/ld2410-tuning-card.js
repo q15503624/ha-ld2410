@@ -35,6 +35,8 @@ const WATCH_MARGIN = 10; // 建議門檻 = 監看期間最高值 + 這個值
 const WAVE_SECONDS = 60;
 const WAVE_GUTTER = 44; // 波動圖左側標籤寬度（px）
 // [代號, 標題, 說明, 預設展開]
+// 只在「可調整」模式顯示的區塊（只看數據時整塊隱藏）。
+const EDIT_SECTIONS = new Set(["wizard", "settings"]);
 const SECTIONS = [
   ["live", "即時雷達", "人在哪裡、每一格的即時波動", true],
   ["map", "偵測地圖", "每一格的能量與門檻，可手動微調", true],
@@ -74,8 +76,9 @@ const KEYS = [
   "button.reboot_device",
 ];
 
-// 快速設定需要、但整合預設停用的實體。
-const NEEDED_KEYS = KEYS.filter((k) => /_energy$|max_(motion|still)_gate$/.test(k));
+// 快速設定需要、但整合預設停用的實體：每格能量、最遠偵測閘，
+// 以及判斷人在哪一格用的距離（步驟 2「偵測範圍」、即時雷達的位置）。
+const NEEDED_KEYS = KEYS.filter((k) => /_energy$|max_(motion|still)_gate$|_distance$/.test(k));
 
 const KINDS = {
   motion: {
@@ -208,7 +211,7 @@ class Ld2410TuningCard extends HTMLElement {
   constructor() {
     super();
     this._kind = "motion";
-    this._gate = 1;
+    this._gate = null; // 使用者點了某一格才有值
     this._drag = null; // 正在調整、還沒送出的門檻 {key, value}
     this._pending = {}; // 已送出、等待雷達回報的寫入 key → {value, label, sent, timer, quiet}
     this._history = {}; // 能量歷史 key → [[時間, 值]]，算 10 秒內最高值
@@ -411,6 +414,7 @@ class Ld2410TuningCard extends HTMLElement {
 
   _selectDevice(id) {
     this._deviceId = id;
+    this._gate = null;
     this._mapKey = undefined;
     this._history = {};
     this._wave = [];
@@ -747,15 +751,16 @@ class Ld2410TuningCard extends HTMLElement {
     this.dispatchEvent(new CustomEvent("hass-notification", { detail: { message }, bubbles: true, composed: true }));
   }
 
-  _toggleMode() {
+  _setMode(mode) {
     this._commit();
-    this._locked = !this._locked;
-    storage.set(MODE_KEY, this._locked ? "view" : "edit");
+    this._locked = mode !== "edit";
+    storage.set(MODE_KEY, mode);
     this._update();
   }
 
   /** 拖動或 ± 調整門檻；commit 時才送出。 */
   _adjust(value, commit) {
+    if (this._gate === null) return;
     const key = limitKey(this._kind, this._gate);
     if (this._locked || !this._map[key]) return;
     this._drag = { key, value: clamp(Math.round(value), 0, 100) };
@@ -1031,12 +1036,19 @@ class Ld2410TuningCard extends HTMLElement {
         <div class="header">
           <ha-icon icon="mdi:radar"></ha-icon>
           <span class="title">LD2410 雷達調校</span>
-          <button id="mode" class="chip-btn"></button>
+          <div id="mode" class="mode" role="group" aria-label="模式">
+            <button data-mode="view" title="只看即時數據，所有設定項目會隱藏">👀 只看數據</button>
+            <button data-mode="edit" title="顯示快速設定、門檻調整與雷達設定">✏️ 可調整</button>
+          </div>
           <select id="device" aria-label="選擇裝置"></select>
         </div>
         <div id="body"></div>
       </ha-card>`;
-    this.shadowRoot.getElementById("mode").addEventListener("click", () => this._toggleMode());
+    // 頂部的模式切換與內文的「切換到可調整」按鈕
+    this.shadowRoot.addEventListener("click", (ev) => {
+      const button = ev.target.closest("[data-mode]");
+      if (button) this._setMode(button.dataset.mode);
+    });
     this.shadowRoot.getElementById("device").addEventListener("change", (ev) => {
       this._selectDevice(ev.target.value);
       this.hass = this._hass;
@@ -1069,8 +1081,12 @@ class Ld2410TuningCard extends HTMLElement {
     const hasEnergy = GATES.some((g) => this._map[energyKey("motion", g)]);
     body.innerHTML = `
       <nav class="jump">
-        ${SECTIONS.map(([sec, title]) => `<button data-jump="${sec}">${title}</button>`).join("")}
+        ${SECTIONS.map(([sec, title]) => `<button data-jump="${sec}" class="${EDIT_SECTIONS.has(sec) ? "edit-only" : ""}">${title}</button>`).join("")}
       </nav>
+      <div class="view-banner view-only">
+        <span>👀 <b>只看數據</b>：快速設定、門檻調整與雷達設定都先藏起來，不會不小心改到。</span>
+        <button class="ghost" data-mode="edit">切換到 ✏️ 可調整</button>
+      </div>
 
       ${this._section("live", `
         <div class="live-head">
@@ -1116,7 +1132,7 @@ class Ld2410TuningCard extends HTMLElement {
         <p class="explain">
           <span id="kind-help"></span>
           每一欄是一段距離。<b class="sw fill-sw"></b>柱子是即時能量，<b class="sw line-sw"></b>橫線是門檻：
-          <b>柱子超過橫線就算偵測到</b>。橫線越低越敏感。直接在圖上拖動橫線，或點一欄後在下方微調。
+          <b>柱子超過橫線就算偵測到</b>。橫線越低越敏感。<span class="edit-only">直接在圖上拖動橫線，或點一欄後在下方微調。</span><span class="view-only">點一欄可以看那一格的詳細數據。</span>
         </p>
         ${LEARN}
         <div id="diag-summary" class="diag-summary"></div>
@@ -1144,9 +1160,11 @@ class Ld2410TuningCard extends HTMLElement {
           <span><ha-icon icon="mdi:account"></ha-icon>目前目標</span>
         </div>
 
-        <div class="editor">
-          <div class="ed-title"><b id="ed-name"></b><span id="ed-dist"></span><span id="ed-state" class="badge"></span></div>
-          <div class="ed-row">
+        <p id="ed-empty" class="muted">點上面任一欄，或即時雷達上的一圈，就能看那一格的能量、門檻與診斷。</p>
+        <div class="editor" id="ed-detail">
+          <div class="ed-title"><b id="ed-name"></b><span id="ed-dist"></span><span id="ed-state" class="badge"></span>
+            <button id="ed-close" class="link" aria-label="取消選取">✕ 取消選取</button></div>
+          <div class="ed-row edit-only">
             <button class="step" data-step="-5" aria-label="門檻 -5">−5</button>
             <button class="step" data-step="-1" aria-label="門檻 -1">−1</button>
             <input type="range" id="ed-range" min="0" max="100" step="1" aria-label="門檻">
@@ -1154,15 +1172,15 @@ class Ld2410TuningCard extends HTMLElement {
             <button class="step" data-step="5" aria-label="門檻 +5">+5</button>
             <output id="ed-val"></output>
           </div>
-          <div class="scale"><span>0 最敏感：什麼都會觸發</span><span>100 等於關閉</span></div>
-          <p id="ed-lock" class="note">目前是<b>只看數據</b>：點欄位只會查看，不會改到門檻。要調整請按右上角的「🔒 只看數據」切換。</p>
+          <div class="scale edit-only"><span>0 最敏感：什麼都會觸發</span><span>100 等於關閉</span></div>
+          <p class="view-only muted">門檻 <b id="ed-limit"></b>（要修改請切換到 ✏️ 可調整）</p>
           <p id="ed-diag" class="diag"></p>
           <div class="ed-facts">
             <span>現在能量 <b id="ed-energy"></b></span>
             <span>10 秒內最高 <b id="ed-peak"></b></span>
             <span>錄到的雜訊 <b id="ed-noise"></b></span>
           </div>
-          <div class="ed-actions">
+          <div class="ed-actions edit-only">
             <button id="ed-suggest" class="ghost" title="房間沒人時使用：門檻設在雜訊之上，避免誤判"></button>
             <button id="ed-max" class="ghost"></button>
           </div>
@@ -1171,7 +1189,7 @@ class Ld2410TuningCard extends HTMLElement {
 
       ${this._section("wizard", `
         <ol class="stepper"></ol>
-        <div id="wizard"></div>`, "wizard")}
+        <div id="wizard"></div>`, "wizard edit-only")}
 
       ${this._section("watch", `<div id="watch"></div>`)}
 
@@ -1200,7 +1218,7 @@ class Ld2410TuningCard extends HTMLElement {
             ([key, label, help]) =>
               `<button data-action="${key}"><b>${label}</b><small>${help}</small></button>`,
           ).join("")}
-        </div>`)}
+        </div>`, "edit-only")}
 
       <div id="status" class="statusbar" role="status" aria-live="polite">調整後會在這裡顯示是否已寫入雷達。</div>
 
@@ -1294,6 +1312,11 @@ class Ld2410TuningCard extends HTMLElement {
     body.querySelector("#ed-suggest").addEventListener("click", () => {
       const peak = this._peak(energyKey(this._kind, this._gate));
       if (peak !== undefined) this._adjust(peak + 10, true);
+    });
+    body.querySelector("#ed-close").addEventListener("click", () => {
+      this._commit();
+      this._gate = null;
+      this._update();
     });
     body.querySelector("#ed-max").addEventListener("click", () => {
       const { maxKey, label } = KINDS[this._kind];
@@ -1434,6 +1457,7 @@ class Ld2410TuningCard extends HTMLElement {
           <li data-live="chk-online"></li>
           <li data-live="chk-energy"></li>
           <li data-live="chk-max"></li>
+          <li data-live="chk-dist"></li>
         </ul>
         <button class="primary" data-act="enable" data-live="enable-btn"></button>
         <details class="tip"><summary>這些感測器會讓資料庫變大嗎？</summary>
@@ -1654,7 +1678,8 @@ class Ld2410TuningCard extends HTMLElement {
         <p>${verdict}</p>
         ${list}
         ${heatTable(watch.max, (g) => this._distanceText(g))}
-        <button class="primary" data-watch="apply" data-live="watch-apply"></button>
+        <button class="primary edit-only" data-watch="apply" data-live="watch-apply"></button>
+        <p class="note view-only">切換到右上角的「✏️ 可調整」，就能一鍵只調高被觸發的格子。</p>
         <p class="muted">建議值 = 監看期間的最高值 +${WATCH_MARGIN}。只會調高被觸發的格子，其他格子不動，不會讓任何一格變得更敏感。
           調完後再監看一次確認；坐著不動時燈會熄的話，到快速設定做「有人測試」。</p>
       </div>
@@ -1734,6 +1759,12 @@ class Ld2410TuningCard extends HTMLElement {
     );
     const hasMax = Object.values(KINDS).every((k) => this._map[k.maxKey]);
     set("chk-max", check(hasMax, hasMax ? "「最遠偵測閘」可以設定" : "「最遠偵測閘」未啟用（步驟 1 需要）"), hasMax ? "ok" : "bad");
+    const hasDistance = Boolean(this._map["sensor.detect_distance"]);
+    set(
+      "chk-dist",
+      check(hasDistance, hasDistance ? "「偵測距離」可以判斷你在哪一格" : "「偵測距離」未啟用（步驟 2 需要）"),
+      hasDistance ? "ok" : "bad",
+    );
     const enable = live("enable-btn");
     if (enable) {
       enable.textContent = this._disabledIds.length ? `一鍵啟用 ${this._disabledIds.length} 個需要的實體` : "需要的實體都已啟用";
@@ -1756,8 +1787,12 @@ class Ld2410TuningCard extends HTMLElement {
     const rangeBtn = live("range-btn");
     if (rangeBtn) {
       const gate = Math.max(2, target ?? 8);
-      rangeBtn.textContent = hasMax ? `範圍設到這裡（Gate ${gate}，${meters((gate + 1) * this._step())} m 內）` : "需要先在步驟 1「準備」啟用最遠偵測閘";
-      rangeBtn.disabled = !hasMax || target === undefined || this._applying;
+      rangeBtn.textContent = !hasMax
+        ? "需要先在步驟 1「準備」啟用最遠偵測閘"
+        : !hasDistance
+          ? "需要先在步驟 1「準備」啟用偵測距離"
+          : `範圍設到這裡（Gate ${gate}，${meters((gate + 1) * this._step())} m 內）`;
+      rangeBtn.disabled = !hasMax || !hasDistance || target === undefined || this._applying;
     }
 
     // 干擾源結果：目前門檻擋不擋得住
@@ -1803,11 +1838,9 @@ class Ld2410TuningCard extends HTMLElement {
   _update() {
     const root = this.shadowRoot;
     const mode = root.getElementById("mode");
-    mode.textContent = this._locked ? "🔒 只看數據" : "✏️ 可調整";
-    mode.classList.toggle("on", !this._locked);
-    mode.title = this._locked
-      ? "現在拖動地圖或滑桿都不會寫入雷達。按一下切換成可調整。"
-      : "現在拖動地圖、滑桿會直接寫入雷達。按一下切換成只看數據。";
+    for (const button of mode.querySelectorAll("[data-mode]")) {
+      button.setAttribute("aria-pressed", String((button.dataset.mode === "view") === this._locked));
+    }
     if (!this._deviceId || !root.getElementById("ed-range")) return;
     root.getElementById("body").classList.toggle("locked", this._locked);
 
@@ -1893,6 +1926,9 @@ class Ld2410TuningCard extends HTMLElement {
   _updateEditor() {
     const root = this.shadowRoot;
     const g = this._gate;
+    root.getElementById("ed-empty").hidden = g !== null;
+    root.getElementById("ed-detail").hidden = g === null;
+    if (g === null) return;
     const kind = KINDS[this._kind];
     const key = limitKey(this._kind, g);
     const step = this._step();
@@ -1912,7 +1948,7 @@ class Ld2410TuningCard extends HTMLElement {
     const frozen = limit === undefined || this._locked;
     range.disabled = frozen;
     for (const button of root.querySelectorAll(".step")) button.disabled = frozen;
-    root.getElementById("ed-lock").hidden = !this._locked;
+    root.getElementById("ed-limit").textContent = limit ?? "未啟用";
     root.getElementById("ed-val").textContent = limit ?? "未啟用";
     root.getElementById("ed-energy").textContent = energy ?? "—";
     root.getElementById("ed-peak").textContent = peak ?? "—";
@@ -2060,6 +2096,15 @@ const STYLE = `
   .ghost { padding: 6px 12px; border-radius: 8px; border: 1px solid var(--primary-color); background: none; color: var(--primary-color); }
   .link { border: none; background: none; color: var(--primary-color); padding: 0; }
   .chip-btn { padding: 6px 12px; border-radius: 999px; border: 1px solid var(--divider-color); background: var(--card-background-color); color: var(--primary-text-color); }
+  .mode { display: inline-flex; border: 1px solid var(--divider-color); border-radius: 999px; padding: 2px; background: var(--secondary-background-color); }
+  .mode button { border: 0; background: transparent; color: var(--secondary-text-color); padding: 5px 12px; border-radius: 999px; font: inherit; cursor: pointer; }
+  .mode button[aria-pressed="true"] { background: var(--card-background-color); color: var(--primary-text-color); font-weight: 600; box-shadow: 0 1px 2px rgb(0 0 0 / 0.15); }
+  #body.locked .edit-only, #body:not(.locked) .view-only { display: none !important; }
+  .view-banner { display: flex; align-items: center; justify-content: space-between; gap: 8px 12px; flex-wrap: wrap;
+    margin: 0 0 12px; padding: 8px 12px; border-radius: 8px; background: var(--secondary-background-color); font-size: 0.92em; }
+  #ed-close { margin-left: auto; }
+  #ed-detail[hidden], #ed-empty[hidden] { display: none; }
+  #ed-empty { margin: 12px 0 0; padding: 12px; border: 1px dashed var(--divider-color); border-radius: 8px; text-align: center; }
   .chip-btn.on { background: var(--primary-color); border-color: var(--primary-color); color: var(--text-primary-color, #fff); }
   .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0; }
   .row input { flex: 1; min-width: 160px; }

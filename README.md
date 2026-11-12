@@ -123,7 +123,7 @@ The top of the panel is a six-step guide that takes about three minutes:
 
 | Step | What it does |
 |---|---|
-| **1. Prepare** | Checks that the radar is online and its energy sensors report data. One click enables the energy and max-gate entities, which are disabled by default. |
+| **1. Prepare** | Checks that the radar is online and its energy sensors report data. One click enables the energy, max-gate and distance entities, which are disabled by default. |
 | **2. Range** | Walk to the farthest spot you want covered; the page shows which gate you are in. One click limits detection to that gate, so the hallway or the next room stay out. |
 | **3. Empty room** | Leave the room while it records 30 s of background noise, shown as a per-gate heat table. Pick a margin and apply thresholds to all 18 gates at once. |
 | **4. Interference** | Turn on one moving thing at a time (fan, air conditioner, curtain…) and record 20 s. The page lists which gates it affects and how strongly, then raises the thresholds above it. |
@@ -137,7 +137,7 @@ The top of the panel is a six-step guide that takes about three minutes:
 - Every write reports its result: writing, confirmed by the radar, timed out, or failed.
 - Each gate gets a plain-language verdict, e.g. "threshold 40 is below the fan's noise 52, so it will false-trigger"; problem gates are marked ⚠.
 - An expandable explainer with diagrams covers what a threshold is and why each gate needs its own.
-- The panel opens in **🔒 View only** mode: you can click columns and watch the data, but dragging and sliders do nothing. Switch to **✏️ Editable** at the top right to change values; the choice is remembered.
+- The panel opens in **👀 View only** mode: quick setup, threshold controls and device settings are hidden, so nothing can be changed by accident. Click a column (or a ring in the live view) to see that gate's details. Switch to **✏️ Editable** at the top right to change values; the choice is remembered.
 
 ### Absence watch (catch occasional false presence)
 If the radar sometimes reports presence when nobody is home, start a 10, 30 or 60 minute watch and leave the room. The panel records each gate's highest energy, which gates crossed their threshold, how often and when, and when *Occupancy* turned on. One click raises **only** the gates that triggered (highest value + 10); no gate is ever lowered. Gates too strong to block are pointed to *max gate* instead.
