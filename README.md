@@ -12,6 +12,7 @@ Fork of [megarushing/ha-ld2410](https://github.com/megarushing/ha-ld2410) (MIT) 
 - Distance and energy measurements for moving and stationary targets.
 - Per-gate energy sensors for detailed zone analysis.
 - A **雷達調校** (radar tuning) sidebar panel that walks you through empty-room, interference and presence tests, so you never need the phone app, plus an absence watch that finds occasional false triggers.
+- A [web version](#web-tuner-no-home-assistant) of the same panel that connects straight to the radar with browser Bluetooth, no Home Assistant needed.
 
 ## Recommended Setup
 
@@ -142,6 +143,19 @@ The top of the panel is a six-step guide that takes about three minutes:
 If the radar sometimes reports presence when nobody is home, start a 10, 30 or 60 minute watch and leave the room. The panel records each gate's highest energy, which gates crossed their threshold, how often and when, and when *Occupancy* turned on. One click raises **only** the gates that triggered (highest value + 10); no gate is ever lowered. Gates too strong to block are pointed to *max gate* instead.
 
 Keep the panel open in a foreground tab while it records. Home Assistant closes the connection of a background tab after 5 minutes unless *Automatically close connection* is turned off in your profile.
+
+## Web tuner (no Home Assistant)
+The same tuning panel also runs as a web page that talks to the radar over browser Bluetooth, handy for tuning a radar for someone without Home Assistant:
+
+**https://q15503624.github.io/ha-ld2410/web/** (add `#demo` to try it with a simulated radar)
+
+1. Open it in Chrome or Edge on a computer or Android phone. **iPhone and iPad are not supported** (no Web Bluetooth).
+2. Close the HLKRadarTool app, and disable the device in Home Assistant if it is set up there. The radar accepts one Bluetooth connection at a time.
+3. Enter the Bluetooth password (factory default `HiLink`), click *連線雷達* (connect) and pick HLK-LD2410_xxxx.
+
+Thresholds and settings are stored in the radar itself and survive closing the page or a power cut. The page runs entirely in the browser; the password and radar data are never uploaded. *Save sensitivities* stores them in this browser.
+
+Deployment: set **Settings → Pages** to **Deploy from a branch**, `main`, `/ (root)`; every push to main updates it. To try it locally, run `python3 -m http.server` in the repo root and open http://localhost:8000/web/. Tests: `node --test web/test/`.
 
 ## Note on recorder
 Some sensors update several times per second. They are **disabled by default**. If you enable them, exclude them from the recorder, or they will fill your database. Real example: six devices with `Last frame` enabled wrote 3.7 million rows in 7 days, 38% of the whole database.

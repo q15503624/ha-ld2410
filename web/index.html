@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LD2410 雷達調校</title>
+  <meta name="description" content="用瀏覽器藍牙直接調校 HLK-LD2410 毫米波雷達，不需要 Home Assistant。">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
+  <style>
+    :root {
+      color-scheme: light;
+      --primary-color: #03a9f4;
+      --text-primary-color: #fff;
+      --primary-text-color: #212121;
+      --secondary-text-color: #727272;
+      --disabled-text-color: #bdbdbd;
+      --primary-background-color: #fafafa;
+      --secondary-background-color: #e5e5e5;
+      --card-background-color: #fff;
+      --divider-color: rgb(0 0 0 / 0.12);
+      --error-color: #db4437;
+      --warning-color: #ffa600;
+      --success-color: #43a047;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        --primary-text-color: #e1e1e1;
+        --secondary-text-color: #9b9b9b;
+        --disabled-text-color: #6f6f6f;
+        --primary-background-color: #111;
+        --secondary-background-color: #282828;
+        --card-background-color: #1c1c1c;
+        --divider-color: rgb(225 225 225 / 0.12);
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--primary-background-color); color: var(--primary-text-color);
+      font: 15px/1.6 system-ui, -apple-system, "PingFang TC", "Microsoft JhengHei", "Noto Sans TC", sans-serif;
+    }
+    header {
+      display: flex; align-items: center; gap: 12px; padding: 0 16px; min-height: 56px;
+      background: var(--primary-color); color: var(--text-primary-color); font-size: 20px;
+    }
+        #conn-state.ok::before { content: "● "; color: var(--success-color); }
+    #conn-state.warn::before { content: "● "; color: var(--warning-color); }
+    main { padding: 16px; max-width: 992px; margin: 0 auto; }
+    @media (max-width: 600px) { main { padding: 8px; } }
+    .panel {
+      max-width: 560px; margin: 24px auto; padding: 20px; background: var(--card-background-color);
+      border: 1px solid var(--divider-color); border-radius: 12px;
+    }
+    .panel h1 { margin: 0 0 8px; font-size: 22px; }
+    .panel ol { padding-left: 20px; }
+    .panel li { margin: 4px 0; }
+    label { display: block; margin: 16px 0 4px; font-weight: 600; }
+    input[type="password"], input[type="text"] {
+      width: 100%; padding: 10px 12px; font: inherit; border-radius: 8px;
+      border: 1px solid var(--divider-color); background: var(--primary-background-color); color: inherit;
+    }
+    .check { display: flex; gap: 6px; align-items: center; margin: 6px 0 0; font-weight: normal; font-size: 13px; color: var(--secondary-text-color); }
+    .buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+    button {
+      font: inherit; padding: 10px 18px; border-radius: 8px; cursor: pointer;
+      border: 1px solid var(--primary-color); background: transparent; color: var(--primary-color);
+    }
+    button.primary { background: var(--primary-color); color: var(--text-primary-color); }
+    button:disabled { opacity: 0.5; cursor: default; }
+    .muted { color: var(--secondary-text-color); font-size: 13px; }
+    .alert { padding: 10px 12px; border-radius: 8px; margin-top: 12px; }
+    .alert.error { background: color-mix(in srgb, var(--error-color) 14%, transparent); color: var(--error-color); }
+    .alert.warn { background: color-mix(in srgb, var(--warning-color) 16%, transparent); }
+    #progress { min-height: 1.6em; margin-top: 8px; }
+    footer { text-align: center; padding: 24px 16px; }
+    a { color: var(--primary-color); }
+  </style>
+</head>
+<body>
+  <header>
+    <span>📡 LD2410 雷達調校</span>
+  </header>
+
+  <main>
+    <section id="connect" class="panel">
+      <h1>連線雷達</h1>
+      <p>用瀏覽器藍牙直接連到 HLK-LD2410，不需要 Home Assistant。</p>
+      <ol>
+        <li>雷達接上電源，站在雷達附近（藍牙約 5–10 公尺內）。</li>
+        <li><b>關閉手機上的 HLKRadarTool App</b>；如果雷達已加入 Home Assistant，先到整合裡停用它。雷達同時只接受一個藍牙連線。</li>
+        <li>按「連線雷達」，在跳出的清單選 <b>HLK-LD2410_xxxx</b>。</li>
+      </ol>
+      <div id="unsupported" class="alert warn" hidden></div>
+      <label for="password">藍牙密碼</label>
+      <input id="password" type="password" value="HiLink" maxlength="6" autocomplete="off" spellcheck="false">
+      <label class="check"><input id="show-password" type="checkbox">顯示密碼（出廠預設 HiLink）</label>
+      <div class="buttons">
+        <button id="pair" class="primary" data-needs-bt="1">連線雷達</button>
+        <button id="demo">示範模式（不用雷達）</button>
+      </div>
+      <div id="progress" class="muted" aria-live="polite"></div>
+      <div id="error" class="alert error" role="alert" hidden></div>
+      <p class="muted">門檻與設定直接寫進雷達，斷線或拔電後都會保留。密碼與雷達資料只在這個瀏覽器裡，不會上傳到任何伺服器。</p>
+    </section>
+
+    <section id="tune" hidden>
+      <div class="panel" style="max-width:none;margin:0 0 12px;padding:10px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <b id="conn-name"></b><span id="conn-state"></span>
+        <span style="flex:1"></span>
+        <button id="disconnect">中斷連線</button>
+      </div>
+      <ld2410-tuning-card id="card"></ld2410-tuning-card>
+    </section>
+  </main>
+
+  <footer class="muted">
+    支援 Chrome、Edge（電腦與 Android）；iPhone、iPad 不支援網頁藍牙。<br>
+    <a href="https://github.com/q15503624/ha-ld2410">原始碼</a> · MIT 授權 · 改作自 megarushing/ha-ld2410 · 與海凌科（HiLink）無關
+  </footer>
+
+  <script src="../custom_components/ld2410/frontend/ld2410-tuning-card.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
