@@ -13,6 +13,7 @@
 const PLATFORM = "ld2410";
 const STORAGE_KEY = "ld2410-tuning-card:device";
 const MODE_KEY = "ld2410-tuning-card:mode"; // "view"（只看數據，預設）或 "edit"
+const OPEN_KEY = "ld2410-tuning-card:open:"; // + 區塊代號 → "1" 展開／"0" 收合
 const GATES = [...Array(9).keys()];
 const PEAK_WINDOW_MS = 10_000;
 const CONFIRM_TIMEOUT_MS = 8_000;
@@ -31,6 +32,16 @@ const STEPS = ["準備", "偵測範圍", "空房基準", "干擾源", "有人測
 const WATCH_MINUTES = [10, 30, 60];
 const WATCH_LEAD_SECONDS = 30;
 const WATCH_MARGIN = 10; // 建議門檻 = 監看期間最高值 + 這個值
+const WAVE_SECONDS = 60;
+const WAVE_GUTTER = 44; // 波動圖左側標籤寬度（px）
+// [代號, 標題, 說明, 預設展開]
+const SECTIONS = [
+  ["live", "即時雷達", "人在哪裡、每一格的即時波動", true],
+  ["map", "偵測地圖", "每一格的能量與門檻，可手動微調", true],
+  ["wizard", "快速設定", "第一次使用：照順序做，約 3 分鐘", true],
+  ["watch", "無人監看", "人不在時被判定有人？錄一段時間找出原因", true],
+  ["settings", "設定與維護", "偵測範圍、無人延遲、光感、校準", false],
+];
 
 // "<domain>.<entity_id 結尾>"：整合依實體名稱產生的 entity_id 後綴。
 const KEYS = [
@@ -85,6 +96,69 @@ const KINDS = {
   },
 };
 
+// 波動圖的列：上方三列是狀態，下面是移動、靜止各 9 格。
+const WAVE_LAYOUT = (() => {
+  const rows = [];
+  let y = 0;
+  for (const [state, label] of [["occupancy", "有人"], ["motion", "移動"], ["static", "靜止"]]) {
+    rows.push({ y, h: 10, label, state });
+    y += 12;
+  }
+  for (const kind of Object.keys(KINDS)) {
+    y += 6;
+    rows.push({ y, h: 12, title: `${KINDS[kind].label}能量` });
+    y += 14;
+    for (const g of GATES) {
+      rows.push({ y, h: 10, label: `G${g}`, kind, g });
+      y += 11;
+    }
+  }
+  return { rows, height: y };
+})();
+const WAVE_HEIGHT = WAVE_LAYOUT.height;
+
+// 俯視扇形圖：雷達在下方中央，每一圈是一格；左半移動、右半靜止。
+const SECTOR = { cx: 190, cy: 186, r0: 14, dr: 18, half: 60, gap: 2, personAngle: 31 };
+const polar = (r, deg) => {
+  const a = (deg * Math.PI) / 180;
+  return [SECTOR.cx + r * Math.sin(a), SECTOR.cy - r * Math.cos(a)].map((v) => +v.toFixed(1));
+};
+const sectorRadius = (gates) => SECTOR.r0 + clamp(gates, 0, 9) * SECTOR.dr;
+const segPath = (g, a1, a2) => {
+  const r1 = sectorRadius(g), r2 = r1 + SECTOR.dr;
+  return `M${polar(r1, a1)} L${polar(r2, a1)} A${r2} ${r2} 0 0 1 ${polar(r2, a2)} L${polar(r1, a2)} A${r1} ${r1} 0 0 0 ${polar(r1, a1)} Z`;
+};
+const sectorSvg = () => {
+  const wedge = { motion: [-SECTOR.half, -SECTOR.gap], still: [SECTOR.gap, SECTOR.half] };
+  const segments = Object.keys(KINDS).flatMap((kind) =>
+    GATES.map((g) => `<path class="seg" data-kind="${kind}" data-gate="${g}" d="${segPath(g, ...wedge[kind])}"><title></title></path>`),
+  );
+  // 圈很密，左邊隔一圈標格數、右邊隔一圈標距離，避免文字擠在一起。
+  const labels = GATES.map((g) => {
+    if (g % 2 === 0) {
+      const [x, y] = polar(sectorRadius(g) + SECTOR.dr / 2, -SECTOR.half - 5);
+      return `<text class="ring-label" x="${x}" y="${y}" text-anchor="end" dominant-baseline="middle">G${g}</text>`;
+    }
+    const [x, y] = polar(sectorRadius(g + 1), SECTOR.half + 5);
+    return `<text class="ring-label" data-ring="${g}" x="${x}" y="${y}" dominant-baseline="middle"></text>`;
+  });
+  const [x8, y8] = polar(sectorRadius(9), SECTOR.half + 5);
+  labels.push(`<text class="ring-label" data-ring="8" x="${x8}" y="${y8}" dominant-baseline="middle"></text>`);
+  // 移動的距離標在圓點左邊、靜止的標在右邊，兩人靠近時不重疊。
+  const persons = Object.keys(KINDS).map((kind) => {
+    const [x, anchor] = kind === "motion" ? [-11, "end"] : [11, "start"];
+    return `<g class="person" data-kind="${kind}"><circle class="pulse" r="8"></circle><circle r="7"></circle>
+      <text x="${x}" text-anchor="${anchor}" dominant-baseline="middle"></text></g>`;
+  });
+  return `
+    <svg class="sector" viewBox="0 0 380 206" role="img" aria-label="雷達俯視圖：左半移動、右半靜止，越外圈越遠">
+      ${segments.join("")}${labels.join("")}
+      <rect class="radar-dot" x="${SECTOR.cx - 10}" y="${SECTOR.cy - 3}" width="20" height="7" rx="2"></rect>
+      <text class="ring-label" x="${SECTOR.cx}" y="${SECTOR.cy + 15}" text-anchor="middle">雷達</text>
+      ${persons.join("")}
+    </svg>`;
+};
+
 const ACTIONS = [
   ["auto_sensitivities", "自動校準", "雷達量測空房的背景雜訊，自動設定全部門檻。", "按下後請離開房間，保持空房至少 10 秒。確定開始？"],
   ["save_sensitivities", "儲存門檻", "把目前 18 個門檻存到 HA，之後可以還原。", "用目前的門檻覆蓋上次存檔？"],
@@ -111,6 +185,7 @@ const blankGates = () => ({ motion: GATES.map(() => undefined), still: GATES.map
 const newWizard = () => ({ step: 0, margin: 10, empty: null, sources: [], person: null, rec: null, sourceName: "" });
 
 const clock = (t) => new Date(t).toLocaleTimeString("zh-TW", { hour12: false });
+const stamp = (t) => `${clock(t)}.${Math.floor((t % 1000) / 100)}`;
 
 const storage = {
   get: (key) => {
@@ -141,6 +216,18 @@ class Ld2410TuningCard extends HTMLElement {
     this._disabledIds = []; // 這台裝置被停用、快速設定需要的實體
     this._watch = null; // 無人監看的錄製與結果
     this._locked = storage.get(MODE_KEY) !== "edit"; // 只看數據：拖動、滑桿不會寫入雷達
+    this._wave = []; // 波動圖的取樣 {t, motion[9], still[9], on{occupancy,motion,static}} 或 {t, gap}
+    this._wavePausedAt = null;
+    this._waveHover = null;
+  }
+
+  connectedCallback() {
+    this._waveTimer ??= setInterval(() => this._drawWave(), 200);
+  }
+
+  disconnectedCallback() {
+    clearInterval(this._waveTimer);
+    this._waveTimer = undefined;
   }
 
   setConfig(config) {
@@ -178,6 +265,7 @@ class Ld2410TuningCard extends HTMLElement {
       this._loadDisabled();
     }
     this._recordEnergy();
+    this._recordWave();
     this._sampleRecording();
     this._sampleWatch();
     this._update();
@@ -325,6 +413,8 @@ class Ld2410TuningCard extends HTMLElement {
     this._deviceId = id;
     this._mapKey = undefined;
     this._history = {};
+    this._wave = [];
+    this._wavePausedAt = null;
     this._drag = null;
     for (const p of Object.values(this._pending)) clearTimeout(p.timer);
     this._pending = {};
@@ -336,6 +426,228 @@ class Ld2410TuningCard extends HTMLElement {
     if (id) storage.set(STORAGE_KEY, id);
     const picker = this.shadowRoot.getElementById("device");
     if (picker && id) picker.value = id;
+  }
+
+  // ── 即時雷達 ────────────────────────────────────────
+
+  /** 能量或狀態有變化時記一筆，保留最近 WAVE_SECONDS 秒；暫停時凍結。 */
+  _recordWave() {
+    if (!this._deviceId || this._wavePausedAt) return;
+    const now = Date.now();
+    const sample = {
+      t: now,
+      motion: GATES.map((g) => this._number(energyKey("motion", g))),
+      still: GATES.map((g) => this._number(energyKey("still", g))),
+      on: Object.fromEntries(["occupancy", "motion", "static"].map((k) => [k, this._value(`binary_sensor.${k}`) === "on"])),
+    };
+    const last = this._wave.at(-1);
+    const key = (x) => JSON.stringify([x.motion, x.still, x.on]);
+    if (last && !last.gap && key(last) === key(sample)) return;
+    this._wave.push(sample);
+    while (this._wave.length > 1 && now - this._wave[1].t > WAVE_SECONDS * 1000) this._wave.shift();
+  }
+
+  _toggleWavePause() {
+    if (this._wavePausedAt) {
+      this._wave.push({ t: Date.now(), gap: true }); // 暫停期間沒有資料
+      this._wavePausedAt = null;
+    } else {
+      this._wavePausedAt = Date.now();
+    }
+    this._update();
+    this._drawWave();
+  }
+
+  _drawWave() {
+    const canvas = this.shadowRoot?.getElementById("wave");
+    const width = canvas?.clientWidth;
+    if (!width || !canvas.closest("details")?.open) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const dpr = window.devicePixelRatio || 1;
+    if (canvas.width !== Math.round(width * dpr)) {
+      canvas.width = Math.round(width * dpr);
+      canvas.height = Math.round(WAVE_HEIGHT * dpr);
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, WAVE_HEIGHT);
+
+    const css = getComputedStyle(this);
+    const color = (name, fallback) => css.getPropertyValue(name).trim() || fallback;
+    const c = {
+      text: color("--secondary-text-color", "#727272"),
+      grid: color("--divider-color", "rgba(0,0,0,0.12)"),
+      base: color("--primary-color", "#03a9f4"),
+      hit: color("--error-color", "#db4437"),
+      off: color("--disabled-text-color", "#bdbdbd"),
+      occupancy: color("--primary-color", "#03a9f4"),
+      motion: color("--warning-color", "#ffa000"),
+      static: color("--success-color", "#43a047"),
+    };
+    const span = WAVE_SECONDS * 1000;
+    const now = this._wavePausedAt ?? Date.now();
+    const plot = width - WAVE_GUTTER;
+    const x = (t) => WAVE_GUTTER + ((t - (now - span)) / span) * plot;
+    const fill = (style, alpha, x1, row, w) => {
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = style;
+      ctx.fillRect(x1, row.y, w, row.h);
+    };
+
+    ctx.font = "10px sans-serif";
+    ctx.textBaseline = "middle";
+    for (const row of WAVE_LAYOUT.rows) {
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = c.text;
+      ctx.fillText(row.title ?? row.label, row.title ? 0 : 8, row.y + row.h / 2);
+      if (!row.title) fill(c.text, 0.06, WAVE_GUTTER, row, plot);
+    }
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = c.grid;
+    for (let sec = 10; sec < WAVE_SECONDS; sec += 10) {
+      ctx.beginPath();
+      ctx.moveTo(x(now - sec * 1000), 0);
+      ctx.lineTo(x(now - sec * 1000), WAVE_HEIGHT);
+      ctx.stroke();
+    }
+
+    const limit = {}, maxGate = {};
+    for (const kind of Object.keys(KINDS)) {
+      limit[kind] = GATES.map((g) => this._number(limitKey(kind, g)));
+      maxGate[kind] = this._maxGate(kind);
+    }
+    this._wave.forEach((sample, i) => {
+      if (sample.gap) return;
+      const x1 = Math.max(WAVE_GUTTER, x(sample.t));
+      const x2 = Math.min(width, x(this._wave[i + 1]?.t ?? now));
+      if (x2 <= x1) return;
+      for (const row of WAVE_LAYOUT.rows) {
+        if (row.title) continue;
+        if (row.state) {
+          if (sample.on[row.state]) fill(c[row.state], 0.9, x1, row, Math.max(1, x2 - x1));
+          continue;
+        }
+        const v = sample[row.kind][row.g];
+        if (v === undefined) continue;
+        const lim = limit[row.kind][row.g];
+        if (row.g > maxGate[row.kind]) fill(c.off, 0.15, x1, row, x2 - x1);
+        // 超過門檻至少畫 3px 寬，0.1 秒的瞬間誤判也看得到。
+        else if (lim !== undefined && v >= lim) fill(c.hit, 0.45 + (0.55 * v) / 100, x1, row, Math.max(3, x2 - x1));
+        else fill(c.base, 0.05 + (0.75 * v) / 100, x1, row, x2 - x1);
+      }
+    });
+
+    if (this._waveHover?.x > WAVE_GUTTER) {
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = c.text;
+      ctx.beginPath();
+      ctx.moveTo(this._waveHover.x, 0);
+      ctx.lineTo(this._waveHover.x, WAVE_HEIGHT);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  /** 游標所在那一刻、那一列的數值。 */
+  _readWave() {
+    const out = this.shadowRoot.getElementById("wave-read");
+    if (!out) return;
+    const hover = this._waveHover;
+    const row = hover && WAVE_LAYOUT.rows.find((r) => !r.title && hover.y >= r.y && hover.y <= r.y + r.h);
+    const width = this.shadowRoot.getElementById("wave").clientWidth;
+    if (!row || hover.x < WAVE_GUTTER || !width) {
+      out.textContent = this._wavePausedAt
+        ? "已暫停：把游標移到色塊上，看那一刻是哪一格、能量多少。"
+        : "把游標移到色塊上看那一刻的數值。看到紅色時先按「暫停」再細看。";
+      return;
+    }
+    const now = this._wavePausedAt ?? Date.now();
+    const t = now - WAVE_SECONDS * 1000 + ((hover.x - WAVE_GUTTER) / (width - WAVE_GUTTER)) * WAVE_SECONDS * 1000;
+    const sample = this._wave.findLast((x) => x.t <= t);
+    if (!sample || sample.gap) {
+      out.textContent = `${stamp(t)}：沒有資料`;
+    } else if (row.state) {
+      out.textContent = `${stamp(t)} · ${row.label}：${sample.on[row.state] ? "是" : "否"}`;
+    } else {
+      const v = sample[row.kind][row.g];
+      const limit = this._number(limitKey(row.kind, row.g));
+      const over = v !== undefined && limit !== undefined && v >= limit;
+      out.textContent =
+        `${stamp(t)} · ${KINDS[row.kind].label} Gate ${row.g}（${this._distanceText(row.g)}）：` +
+        `能量 ${v ?? "—"}，門檻 ${limit ?? "—"}${over ? " → 超過，判定有人" : ""}`;
+    }
+  }
+
+  _updateLive() {
+    const root = this.shadowRoot;
+    const head = root.getElementById("live-state");
+    if (!head) return;
+    const occupancy = this._state("binary_sensor.occupancy");
+    const kinds = Object.values(KINDS).filter((k) => this._value(k.sensor) === "on").map((k) => k.label);
+    let [state, big, sub] = ["off", "沒有人", "雷達正常運作中"];
+    if (!occupancy || occupancy.state === "unavailable") {
+      [state, big, sub] = ["offline", "雷達離線", "確認電源、藍牙代理，並關閉手機 App"];
+    } else if (occupancy.state === "on") {
+      const cm = this._number("sensor.detect_distance");
+      const gate = this._targetGate();
+      state = "on";
+      big = "有人";
+      sub = [kinds.join("＋") || "偵測中", cm === undefined ? "" : `約 ${meters(cm / 100)} m`].filter(Boolean).join(" · ");
+      if (gate !== undefined) sub += `（Gate ${gate}）`;
+    }
+    head.className = `live-state ${state}`;
+    head.querySelector(".big").textContent = big;
+    head.querySelector("small").textContent = sub;
+
+    const step = this._step();
+    for (const seg of root.querySelectorAll(".seg")) {
+      const kind = seg.dataset.kind;
+      const g = Number(seg.dataset.gate);
+      const energy = this._number(energyKey(kind, g));
+      const limit = this._limit(limitKey(kind, g));
+      const off = g > this._maxGate(kind);
+      seg.classList.toggle("off", off);
+      seg.classList.toggle("hit", !off && energy !== undefined && limit !== undefined && energy >= limit);
+      seg.classList.toggle("sel", kind === this._kind && g === this._gate);
+      seg.style.fillOpacity = off ? "" : String(+(0.08 + ((energy ?? 0) / 100) * 0.82).toFixed(3));
+      seg.querySelector("title").textContent =
+        `${KINDS[kind].label} Gate ${g}（${this._distanceText(g)}）：能量 ${energy ?? "—"}，門檻 ${limit ?? "—"}` +
+        (off ? "，超出偵測範圍" : "");
+    }
+    for (const label of root.querySelectorAll("[data-ring]")) {
+      label.textContent = `${meters((Number(label.dataset.ring) + 1) * step)}m`;
+    }
+    for (const [kind, k] of Object.entries(KINDS)) {
+      const person = root.querySelector(`.person[data-kind="${kind}"]`);
+      const cm = this._number(k.distance);
+      const show = this._value(k.sensor) === "on" && cm !== undefined;
+      person.classList.toggle("show", show);
+      if (!show) continue;
+      const [px, py] = polar(sectorRadius(cm / 100 / step), kind === "motion" ? -SECTOR.personAngle : SECTOR.personAngle);
+      person.style.transform = `translate(${px}px, ${py}px)`;
+      person.querySelector("text").textContent = `${meters(cm / 100)} m`;
+    }
+
+    const pause = root.getElementById("wave-pause");
+    if (pause) pause.textContent = this._wavePausedAt ? "▶ 繼續" : "⏸ 暫停";
+    if (pause) pause.classList.toggle("on", Boolean(this._wavePausedAt));
+    this._readWave();
+  }
+
+  _section(sec, inner, cls = "") {
+    const [, title, sub, open] = SECTIONS.find(([s]) => s === sec);
+    const saved = storage.get(`${OPEN_KEY}${sec}`);
+    return `
+      <details class="box ${cls}" data-sec="${sec}" ${(saved ? saved === "1" : open) ? "open" : ""}>
+        <summary><h3>${title}</h3><small class="muted">${sub}</small></summary>
+        <div class="box-body">${inner}</div>
+      </details>`;
+  }
+
+  _jump(sec) {
+    const details = this.shadowRoot.querySelector(`details[data-sec="${sec}"]`);
+    details.open = true;
+    details.scrollIntoView?.({ behavior: "smooth", block: "start" });
   }
 
   // ── 寫入與回饋 ──────────────────────────────────────
@@ -756,35 +1068,50 @@ class Ld2410TuningCard extends HTMLElement {
     }
     const hasEnergy = GATES.some((g) => this._map[energyKey("motion", g)]);
     body.innerHTML = `
-      <section class="status">
-        ${chip("binary_sensor.occupancy", "有人", "mdi:home-account")}
-        ${chip("binary_sensor.motion", "移動", "mdi:run")}
-        ${chip("binary_sensor.static", "靜止", "mdi:human-handsdown")}
-        <div class="facts">
-          ${fact("sensor.detect_distance", "目標距離", "cm")}
-          ${fact("sensor.photo_sensor", "光感", "")}
-        </div>
-      </section>
+      <nav class="jump">
+        ${SECTIONS.map(([sec, title]) => `<button data-jump="${sec}">${title}</button>`).join("")}
+      </nav>
 
-      <section class="box wizard">
-        <div class="box-head"><h3>快速設定</h3><small class="muted">照順序做，約 3 分鐘完成</small></div>
-        <ol class="stepper"></ol>
-        <div id="wizard"></div>
-      </section>
-
-      <section class="box">
-        <div class="box-head"><h3>無人監看</h3><small class="muted">人不在時被判定有人？讓它錄一段時間找出原因</small></div>
-        <div id="watch"></div>
-      </section>
-
-      <section class="box">
-        <div class="box-head">
-          <h3>偵測地圖 <small class="muted">即時・可手動微調</small></h3>
-          <div class="tabs" role="tablist">
-            ${Object.entries(KINDS)
-              .map(([kind, k]) => `<button role="tab" data-kind="${kind}">${k.label}偵測</button>`)
-              .join("")}
+      ${this._section("live", `
+        <div class="live-head">
+          <div id="live-state" class="live-state"><span class="big"></span><small></small></div>
+          <div class="status">
+            ${chip("binary_sensor.occupancy", "有人", "mdi:home-account")}
+            ${chip("binary_sensor.motion", "移動", "mdi:run")}
+            ${chip("binary_sensor.static", "靜止", "mdi:human-handsdown")}
           </div>
+          <div class="facts">
+            ${fact("sensor.detect_distance", "目標距離", "cm")}
+            ${fact("sensor.photo_sensor", "光感", "")}
+          </div>
+        </div>
+        <div class="live-grid">
+          <figure class="sector-box">
+            ${sectorSvg()}
+            <figcaption><span>◀ 左半：移動</span><span>雷達在下方，越外圈越遠</span><span>右半：靜止 ▶</span></figcaption>
+          </figure>
+          <div class="wave-box">
+            ${
+              hasEnergy
+                ? `<div class="wave-tools">
+                    <b>最近 ${WAVE_SECONDS} 秒的波動</b>
+                    <button id="wave-pause" class="chip-btn"></button>
+                  </div>
+                  <canvas id="wave" height="${WAVE_HEIGHT}"></canvas>
+                  <div class="wave-axis"><span>${WAVE_SECONDS} 秒前</span><span>${WAVE_SECONDS / 2} 秒前</span><span>現在</span></div>
+                  <p id="wave-read" class="wave-read"></p>`
+                : `<p class="hint">看不到波動：請先完成「快速設定 → 準備」，啟用能量感測器。</p>`
+            }
+          </div>
+        </div>
+        <p class="explain">顏色越深代表那一格的能量越強，<b class="sw hit-sw"></b>紅色代表超過門檻（雷達會判定有人）。
+          瞬間的誤判在波動圖上是一個短短的紅點：看到時按「暫停」，把游標移上去就知道是哪一格、多少能量。點扇形圖的任一格可以到偵測地圖調整。</p>`)}
+
+      ${this._section("map", `
+        <div class="tabs" role="tablist">
+          ${Object.entries(KINDS)
+            .map(([kind, k]) => `<button role="tab" data-kind="${kind}">${k.label}偵測</button>`)
+            .join("")}
         </div>
         <p class="explain">
           <span id="kind-help"></span>
@@ -840,20 +1167,24 @@ class Ld2410TuningCard extends HTMLElement {
             <button id="ed-max" class="ghost"></button>
           </div>
         </div>
-      </section>
+      `)}
 
-      <section class="box">
-        <h3>範圍與時間</h3>
+      ${this._section("wizard", `
+        <ol class="stepper"></ol>
+        <div id="wizard"></div>`, "wizard")}
+
+      ${this._section("watch", `<div id="watch"></div>`)}
+
+      ${this._section("settings", `
+        <h4>範圍與時間</h4>
         <div class="settings">
           ${numberBox("number.absence_delay", "無人延遲（秒）", 0, 65535, "最後一次偵測到人之後，等多久才判定沒人。太短的話坐著不動時燈會熄。")}
           ${gateSelect("number.max_motion_gate", "移動偵測最遠到", "超過這格就不偵測移動，用來避開門外或隔壁。")}
           ${gateSelect("number.max_still_gate", "靜止偵測最遠到", "超過這格就不偵測靜止的人。")}
           ${optionSelect("select.distance_resolution", "距離解析度", "每一格代表多長的距離。改了之後各格的距離會跟著變。")}
         </div>
-      </section>
 
-      <section class="box">
-        <h3>光感與 OUT 腳位</h3>
+        <h4>光感與 OUT 腳位</h4>
         <div class="settings">
           ${optionSelect("select.light_function", "光控功能", "只影響雷達實體 OUT 腳位，不影響 HA 的有人判斷。")}
           <label>光感門檻（0–255）
@@ -862,17 +1193,14 @@ class Ld2410TuningCard extends HTMLElement {
           </label>
           ${optionSelect("select.out_level", "OUT 腳位準位", "接繼電器或其他硬體時才需要調整。")}
         </div>
-      </section>
 
-      <section class="box">
-        <h3>校準與維護</h3>
+        <h4>校準與維護</h4>
         <div class="actions">
           ${ACTIONS.map(
             ([key, label, help]) =>
               `<button data-action="${key}"><b>${label}</b><small>${help}</small></button>`,
           ).join("")}
-        </div>
-      </section>
+        </div>`)}
 
       <div id="status" class="statusbar" role="status" aria-live="polite">調整後會在這裡顯示是否已寫入雷達。</div>
 
@@ -887,6 +1215,36 @@ class Ld2410TuningCard extends HTMLElement {
   }
 
   _bindControls(body) {
+    for (const details of body.querySelectorAll("details[data-sec]")) {
+      details.addEventListener("toggle", () => storage.set(`${OPEN_KEY}${details.dataset.sec}`, details.open ? "1" : "0"));
+    }
+    for (const button of body.querySelectorAll("[data-jump]")) {
+      button.addEventListener("click", () => this._jump(button.dataset.jump));
+    }
+    body.querySelector(".sector").addEventListener("click", (ev) => {
+      const seg = ev.target.closest(".seg");
+      if (!seg) return;
+      this._commit();
+      this._kind = seg.dataset.kind;
+      this._gate = Number(seg.dataset.gate);
+      this._update();
+      this._jump("map");
+    });
+    const wave = body.querySelector("#wave");
+    if (wave) {
+      body.querySelector("#wave-pause").addEventListener("click", () => this._toggleWavePause());
+      wave.addEventListener("pointermove", (ev) => {
+        const rect = wave.getBoundingClientRect();
+        this._waveHover = { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
+        this._readWave();
+        this._drawWave();
+      });
+      wave.addEventListener("pointerleave", () => {
+        this._waveHover = null;
+        this._readWave();
+      });
+    }
+
     for (const tab of body.querySelectorAll(".tabs button")) {
       tab.addEventListener("click", () => {
         this._commit();
@@ -1469,6 +1827,7 @@ class Ld2410TuningCard extends HTMLElement {
       el.textContent = value !== undefined ? `${value} ${el.dataset.unit}`.trim() : enabled ? "—" : "未啟用";
     }
 
+    this._updateLive();
     this._updateChart();
     this._updateEditor();
     this._updateSettings();
@@ -1679,6 +2038,7 @@ const heatTable = (max, distance) => `
   </div>`;
 
 const STYLE = `
+  :host { display: block; }
   ha-card { padding: 16px; max-width: 960px; margin: 0 auto; }
   .header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
   .title { font-size: 1.3em; font-weight: 500; flex: 1; }
@@ -1714,6 +2074,61 @@ const STYLE = `
   .box { margin-top: 16px; padding: 16px; border: 1px solid var(--divider-color); border-radius: 12px; }
   .box-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
   .box-head h3 { margin: 0; }
+
+  h4 { margin: 20px 0 8px; font-weight: 500; }
+  h4:first-child { margin-top: 0; }
+  .jump {
+    position: sticky; top: 0; z-index: 2; display: flex; gap: 6px; overflow-x: auto; padding: 8px 0; margin-top: 8px;
+    background: var(--ha-card-background, var(--card-background-color, #fff));
+  }
+  .jump button {
+    flex: none; padding: 6px 14px; border-radius: 999px; border: 1px solid var(--divider-color);
+    background: none; color: var(--primary-text-color);
+  }
+  .jump button:hover { border-color: var(--primary-color); color: var(--primary-color); }
+  details.box > summary { list-style: none; cursor: pointer; display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; }
+  details.box > summary::-webkit-details-marker { display: none; }
+  details.box > summary::before { content: "▸"; color: var(--secondary-text-color); transition: transform 0.2s; }
+  details.box[open] > summary::before { transform: rotate(90deg); }
+  details.box > summary h3 { margin: 0; }
+  .box-body { margin-top: 12px; }
+  .box-body > .tabs { margin-bottom: 8px; }
+
+  .live-head { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; }
+  .live-state { display: flex; flex-direction: column; min-width: 150px; }
+  .live-state .big { font-size: 2.2em; font-weight: 600; line-height: 1.15; }
+  .live-state small { color: var(--secondary-text-color); font-size: 0.95em; }
+  .live-state.on .big { color: var(--primary-color); }
+  .live-state.offline .big { color: var(--error-color); }
+  .live-head .status { margin-top: 0; }
+  .live-head .facts { margin-left: auto; }
+  .live-grid { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 16px; margin-top: 12px; align-items: start; }
+  .sector-box { margin: 0; }
+  .sector { display: block; width: 100%; height: auto; }
+  .sector-box figcaption { display: flex; justify-content: space-between; gap: 8px; font-size: 0.8em; color: var(--secondary-text-color); }
+  .seg { fill: var(--primary-color); fill-opacity: 0.08; stroke: var(--card-background-color, #fff); stroke-width: 1.5; cursor: pointer; transition: fill-opacity 0.2s; }
+  .seg:hover { stroke: var(--primary-color); }
+  .seg.hit { fill: var(--error-color); }
+  .seg.off { fill: var(--disabled-text-color, #bdbdbd); fill-opacity: 0.15; }
+  .seg.sel { stroke: var(--primary-text-color); stroke-width: 2; }
+  .ring-label { font-size: 9px; fill: var(--secondary-text-color); }
+  .radar-dot { fill: var(--primary-text-color); }
+  .person { display: none; transition: transform 0.4s ease; pointer-events: none; }
+  .person.show { display: inline; }
+  .person circle { stroke: var(--card-background-color, #fff); stroke-width: 2; }
+  .person[data-kind=motion] circle { fill: var(--warning-color, #ffa000); }
+  .person[data-kind=still] circle { fill: var(--success-color, #43a047); }
+  .person .pulse { fill: none !important; stroke-width: 2; animation: pulse 1.6s ease-out infinite; }
+  .person[data-kind=motion] .pulse { stroke: var(--warning-color, #ffa000); }
+  .person[data-kind=still] .pulse { stroke: var(--success-color, #43a047); }
+  .person text { font-size: 10px; font-weight: 600; fill: var(--primary-text-color); }
+  @keyframes pulse { from { r: 7; opacity: 0.9; } to { r: 20; opacity: 0; } }
+  .wave-tools { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  #wave { display: block; width: 100%; height: ${WAVE_HEIGHT}px; touch-action: none; cursor: crosshair; }
+  .wave-axis { display: flex; justify-content: space-between; margin-left: ${WAVE_GUTTER}px; font-size: 0.75em; color: var(--secondary-text-color); }
+  .wave-read { min-height: 1.4em; margin: 6px 0 0; font-size: 0.85em; font-variant-numeric: tabular-nums; }
+  .target-here .axis b { color: var(--primary-color); }
+  .target-here .axis small::after { content: " · 人"; color: var(--primary-color); font-weight: 600; }
 
   .wizard { border-color: var(--primary-color); }
   .stepper { display: flex; gap: 4px; list-style: none; padding: 0; margin: 12px 0; overflow-x: auto; }
@@ -1877,6 +2292,9 @@ const STYLE = `
   .statusbar.error::before { content: "✗ "; }
   .footer { margin-top: 12px; color: var(--secondary-text-color); font-size: 0.85em; }
 
+  @media (max-width: 760px) {
+    .live-grid { grid-template-columns: 1fr; }
+  }
   @media (max-width: 600px) {
     ha-card { padding: 12px; }
     .box { padding: 12px; }

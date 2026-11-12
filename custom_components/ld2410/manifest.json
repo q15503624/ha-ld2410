@@ -28,5 +28,5 @@
   "issue_tracker": "https://github.com/q15503624/ha-ld2410/issues",
   "loggers": ["ld2410"],
   "requirements": [],
-  "version": "0.9.1-gl6"
+  "version": "0.9.1-gl7"
 }

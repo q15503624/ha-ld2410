@@ -109,6 +109,14 @@ ld2410:
 
 With several radars, switch between them with the dropdown at the top. The panel itself is in Traditional Chinese.
 
+### Live radar
+The first section shows what the radar sees right now:
+- **Status in large type**: whether someone is there, moving or still, roughly how far away and in which gate.
+- **Top-down fan view**: the radar sits at the bottom and each ring is one gate (left half motion, right half still). Darker means more energy, red means above the threshold, and dots mark the moving and still targets. Click a ring to jump to it in the detection map.
+- **60-second waterfall**: every gate's energy over time, plus Occupancy, Motion and Static strips. A 0.1 s false trigger shows up as a short red mark. Pause, then hover to read the exact time, gate, energy and threshold.
+
+Sections can be collapsed (remembered), and the bar at the top jumps between them.
+
 ### Quick setup (recommended for the first time)
 The top of the panel is a six-step guide that takes about three minutes:
 
